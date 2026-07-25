@@ -224,6 +224,28 @@ class Pane {
     (this.graphical ? this.screen : this.grid).focus();
   }
 
+  /// Show the six digits the other machine is displaying while it waits for someone to approve us.
+  ///
+  /// Deliberately loud and in the pane itself: this is the one moment where the user is being asked
+  /// to compare something, and a subtle status line is exactly how people learn to click Allow
+  /// without looking.
+  confirm(sas) {
+    if (!sas) {
+      this.el.querySelector(".confirm")?.remove();
+      return;
+    }
+    let box = this.el.querySelector(".confirm");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "confirm";
+      this.body.prepend(box);
+    }
+    box.innerHTML =
+      `<p>Waiting for approval on <b>${esc(this.name.textContent)}</b>.</p>` +
+      `<div class="sas">${esc(sas)}</div>` +
+      `<p class="fine">Allow it there only if these six digits are the ones on its screen.</p>`;
+  }
+
   setStatus(state, detail) {
     this.dot.dataset.state = state;
     this.detail.textContent = detail || "";
@@ -508,6 +530,7 @@ listen("mirror:screeninfo", (e) => to(e.payload)?.screenInfo(e.payload.w, e.payl
 listen("mirror:raster", (e) => to(e.payload)?.raster(e.payload.x, e.payload.y, e.payload.url));
 listen("mirror:pointer", (e) => to(e.payload)?.pointer(e.payload));
 listen("mirror:pointershape", (e) => to(e.payload)?.shape(e.payload.url, e.payload.hotX, e.payload.hotY));
+listen("mirror:confirm", (e) => to(e.payload)?.confirm(e.payload.sas));
 
 listen("mirror:status", (e) => {
   const { target, state, detail } = e.payload;
@@ -635,11 +658,17 @@ mir.form.addEventListener("submit", async (e) => {
   try {
     const cfg = await invoke("get_config");
     const addr = mir.addr.value.trim();
+    if (!addr) {
+      mir.error.textContent = "an address is needed — the other machine's share tab shows it";
+      return;
+    }
+    // Empty is the normal case now: no fingerprint means "we have never met", which is what makes
+    // the panel ask that machine to approve us instead of refusing.
     const fingerprint = mir.fp.value.trim();
     cfg.agents = cfg.agents || [];
     let index = cfg.agents.findIndex((t) => t.addr === addr);
     if (index >= 0) {
-      cfg.agents[index].fingerprint = fingerprint;
+      if (fingerprint) cfg.agents[index].fingerprint = fingerprint;
     } else {
       cfg.agents.push({ name: addr, addr, fingerprint });
       index = cfg.agents.length - 1;
@@ -647,14 +676,103 @@ mir.form.addEventListener("submit", async (e) => {
     // A machine you just paired is one you want to look at.
     cfg.visible = [index, ...(cfg.visible || []).filter((i) => i !== index)].slice(0, 2);
     await invoke("save_config", { config: cfg });
-    // Tokens are keyed by address, so pairing a second machine leaves the first one's alone.
-    await invoke("set_agent_token", { addr, token: mir.token.value });
+    // Tokens are keyed by address, so pairing a second machine leaves the first one's alone. Only
+    // stored when one was actually given — a console agent's way in, not a desktop's.
+    if (mir.token.value.trim()) {
+      await invoke("set_agent_token", { addr, token: mir.token.value.trim() });
+    }
     mir.token.value = "";
     mir.form.hidden = true;
     await refreshTargets();
     await invoke("mirror_sync");
   } catch (err) {
     mir.error.textContent = String(err);
+  }
+});
+
+// ── share this PC ───────────────────────────────────────────────────────────
+//
+// The same three operations the agent has always had on its command line — run, install at logon,
+// open the firewall — with the terminal taken out. Nothing here is new capability; it is the
+// difference between a tool you can set up and one you actually do.
+
+const sh = {
+  pane: document.getElementById("share"),
+  dot: document.getElementById("sh-dot"),
+  state: document.getElementById("sh-state"),
+  start: document.getElementById("sh-start"),
+  install: document.getElementById("sh-install"),
+  msg: document.getElementById("sh-msg"),
+  addrBox: document.getElementById("sh-addr-box"),
+  address: document.getElementById("sh-address"),
+  detail: document.getElementById("sh-detail"),
+};
+
+async function refreshShare() {
+  let st;
+  try {
+    st = await invoke("share_status");
+  } catch (err) {
+    sh.state.textContent = String(err);
+    sh.dot.dataset.state = "error";
+    return;
+  }
+
+  if (!st.agent) {
+    // Worth being specific: this is the one failure the user cannot do anything about from here.
+    sh.dot.dataset.state = "error";
+    sh.state.textContent = "win-agent.exe is missing — reinstall hublot to restore it";
+    sh.start.disabled = sh.install.disabled = true;
+    return;
+  }
+  sh.start.disabled = false;
+  sh.install.disabled = false;
+
+  sh.dot.dataset.state = st.running ? "connected" : "idle";
+  sh.state.textContent = st.running ? "sharing — this PC can be controlled" : "not sharing";
+  sh.start.textContent = st.running ? "Sharing" : "Start sharing now";
+  sh.start.disabled = st.running;
+
+  sh.addrBox.hidden = !st.running || !st.addresses.length;
+  sh.address.replaceChildren(
+    ...st.addresses.map((a) => {
+      const d = document.createElement("div");
+      d.className = "sas addr";
+      d.textContent = `${a}:${st.port}`;
+      return d;
+    })
+  );
+
+  const bits = [];
+  bits.push(st.installed ? "starts automatically at logon" : "does NOT start at logon yet");
+  // Without the rule the agent runs and nothing can reach it, which looks exactly like a broken
+  // agent — so it gets said plainly rather than left for the other machine to discover.
+  bits.push(st.firewall ? "allowed through the firewall" : "NOT allowed through the firewall — nothing will connect");
+  sh.detail.textContent = bits.join(" · ");
+}
+
+sh.start.addEventListener("click", async () => {
+  sh.msg.textContent = "starting…";
+  try {
+    await invoke("share_start");
+    // The agent takes a moment to bind its port; polling once beats reporting success blindly.
+    setTimeout(refreshShare, 700);
+    sh.msg.textContent = "";
+  } catch (err) {
+    sh.msg.textContent = String(err);
+  }
+});
+
+sh.install.addEventListener("click", async () => {
+  sh.msg.textContent = "waiting for the administrator prompt…";
+  try {
+    // LocalSubnet rather than a typed address: it is the honest scope for a home network, it needs
+    // nothing from the user, and it is still far tighter than opening the port to anything.
+    await invoke("share_install", { allow: "LocalSubnet" });
+    sh.msg.textContent = "done — this PC will share from every logon";
+    setTimeout(refreshShare, 900);
+  } catch (err) {
+    sh.msg.textContent = String(err);
   }
 });
 
@@ -816,11 +934,16 @@ async function showView(next) {
   });
   el.term.hidden = next !== "shell";
   mir.pane.hidden = next !== "mirror";
+  sh.pane.hidden = next !== "share";
   set.pane.hidden = next !== "settings";
 
   // Leaving the mirror means letting go of anything held there.
   if (next !== "mirror") release();
 
+  if (next === "share") {
+    refreshShare();
+    return;
+  }
   if (next === "settings") {
     loadSettings();
     return;

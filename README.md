@@ -137,6 +137,24 @@ It creates an unprivileged `hublot` user in groups `tty` and `input`, installs a
 fingerprint and token to paste into the panel. `uninstall.sh` undoes it; `--purge` also removes the
 identity, which un-pairs every panel.
 
+## Adding a Windows machine
+
+On the machine you want to control, open hublot → **share this PC** → **Start sharing now**. It
+shows you its address. Use **Start at logon & allow through firewall** once, and accept the
+administrator prompt, so it comes back after a reboot and Windows lets the panel reach it.
+
+On the panel: **mirror** → **+ pair** → type that address. A dialog appears on the other machine
+showing six digits, and the panel shows the same six. If they match, click Allow there. Nothing is
+copied between machines.
+
+**The six digits are the security, so they are worth a glance.** They are derived from both
+machines' certificates: anything sitting in the middle has to present a different certificate to
+each end, which makes the two numbers differ. Matching digits mean you are talking to that machine
+and nothing else.
+
+Linux and Proxmox consoles pair the older way — they have no screen to ask on, so they print a
+token instead. See *Installing the agent on a Linux host* above.
+
 ## Two machines at once
 
 Every configured machine is a chip in the mirror toolbar. Click one to put it on screen, click it

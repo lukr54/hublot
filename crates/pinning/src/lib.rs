@@ -80,6 +80,78 @@ impl ServerCertVerifier for PinnedCert {
     }
 }
 
+/// Accepts whatever certificate the server presents, and *records* it.
+///
+/// Used for exactly one thing: the first contact with a machine you are about to pair with, where
+/// by definition you do not yet know its certificate. Nothing is trusted as a result — the
+/// fingerprint it captures is shown to the user as six digits alongside the same six digits on the
+/// other machine, and only a human confirming they match turns it into a pin.
+///
+/// Kept in this crate next to `PinnedCert` on purpose: a reader looking at how pinning works should
+/// see the one case where it is deliberately deferred, rather than find it improvised elsewhere.
+#[derive(Debug)]
+pub struct TrustOnFirstUse {
+    seen: Arc<std::sync::Mutex<Option<[u8; 32]>>>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl TrustOnFirstUse {
+    pub fn new(provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
+        Self { seen: Arc::new(std::sync::Mutex::new(None)), provider }
+    }
+
+    /// A handle to whatever certificate the server ends up presenting.
+    pub fn observed(&self) -> Arc<std::sync::Mutex<Option<[u8; 32]>>> {
+        self.seen.clone()
+    }
+}
+
+impl ServerCertVerifier for TrustOnFirstUse {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        *self.seen.lock().unwrap() = Some(Sha256::digest(end_entity.as_ref()).into());
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
 /// Accepts any structurally valid client certificate, leaving *identity* to the application.
 ///
 /// This is not as lax as it sounds, and the split is deliberate. TLS's job here is to prove the
@@ -146,6 +218,32 @@ impl rustls::server::danger::ClientCertVerifier for AcceptAnyClientCert {
     }
 }
 
+/// The six digits shown on both machines while pairing.
+///
+/// **This is the whole security of the approve-on-the-machine flow, so it is worth being precise
+/// about why it works.** Neither end has seen the other before, so neither can verify a
+/// certificate. What they *can* do is derive a number from **both** certificates and show it to a
+/// human on each side.
+///
+/// Someone sitting in the middle has to terminate two separate TLS connections and therefore
+/// presents a different certificate to each end. The two ends then derive different numbers, and
+/// the person comparing them sees it. To get away with it an attacker must land on the same six
+/// digits by chance: one attempt in a million, with no way to retry silently, because a mismatch is
+/// visible and a denial is final.
+///
+/// Order matters and is fixed — server first, then client — or the two ends would compute
+/// different digits from the same pair of certificates and every honest pairing would look like an
+/// attack.
+pub fn sas(server_fp: &[u8; 32], client_fp: &[u8; 32]) -> String {
+    let mut h = Sha256::new();
+    h.update(b"hublot pairing v1");
+    h.update(server_fp);
+    h.update(client_fp);
+    let digest: [u8; 32] = h.finalize().into();
+    let n = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
+    format!("{n:06}")
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
 }
@@ -185,5 +283,25 @@ mod tests {
     #[test]
     fn wrong_length_is_rejected() {
         assert!(parse_fingerprint("AA:BB").is_err());
+    }
+
+    #[test]
+    fn sas_is_six_digits_and_stable() {
+        let (s, c) = ([1u8; 32], [2u8; 32]);
+        let a = sas(&s, &c);
+        assert_eq!(a.len(), 6);
+        assert!(a.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(a, sas(&s, &c), "both ends must derive the same digits");
+    }
+
+    /// The property the whole flow rests on: swap either certificate and the digits change, so a
+    /// machine in the middle cannot show the same number to both ends.
+    #[test]
+    fn sas_changes_if_either_certificate_changes() {
+        let base = sas(&[1u8; 32], &[2u8; 32]);
+        assert_ne!(base, sas(&[9u8; 32], &[2u8; 32]), "different server cert");
+        assert_ne!(base, sas(&[1u8; 32], &[9u8; 32]), "different client cert");
+        // And it is not symmetric, or the two ends could disagree about which is which.
+        assert_ne!(base, sas(&[2u8; 32], &[1u8; 32]));
     }
 }

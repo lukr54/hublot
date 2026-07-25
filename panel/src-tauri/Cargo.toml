@@ -26,3 +26,5 @@ tauri-plugin-global-shortcut = "2"
 # credential and never belongs in a config file.
 keyring = { version = "3", features = ["windows-native"] }
 base64 = "0.22"
+# For the UAC prompt that adds this machine's firewall rule (see src/share.rs).
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

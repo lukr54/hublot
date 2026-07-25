@@ -16,11 +16,17 @@ async fn main() -> Result<()> {
         .context("set HUBLOT_AGENT=host:port")?
         .parse()
         .context("HUBLOT_AGENT")?;
-    let fingerprint =
-        protocol::pin::parse_fingerprint(&std::env::var("HUBLOT_FP").context("set HUBLOT_FP")?)?;
-    // With a token we enrol; without one we rely on having been enrolled already.
+    // HUBLOT_APPROVE=1 exercises the approve-on-the-machine path: no fingerprint is known, and the
+    // agent is expected to ask whoever is sitting at it.
+    let approving = std::env::var("HUBLOT_APPROVE").is_ok();
+    let fingerprint = match std::env::var("HUBLOT_FP") {
+        Ok(fp) => Some(protocol::pin::parse_fingerprint(&fp)?),
+        Err(_) if approving => None,
+        Err(_) => anyhow::bail!("set HUBLOT_FP, or HUBLOT_APPROVE=1 for a first contact"),
+    };
     let auth = match std::env::var("HUBLOT_TOKEN") {
         Ok(token) => protocol::Auth::Enrol { token },
+        Err(_) if approving => protocol::Auth::Approve,
         Err(_) => protocol::Auth::Certificate,
     };
     let identity = mirror::ClientIdentity::load_or_create(std::path::Path::new(
@@ -48,7 +54,12 @@ async fn main() -> Result<()> {
     while let Some(ev) = rx.recv().await {
         match ev {
             mirror::Event::Connected => println!("✓ authenticated\n"),
-            mirror::Event::Enrolled => println!("✓ enrolled — the token is now spent"),
+            mirror::Event::Confirm { sas } => {
+                println!("· waiting for someone at that machine to approve us — code {sas}");
+            }
+            mirror::Event::Enrolled { fingerprint } => {
+                println!("✓ enrolled — pin this from now on: {fingerprint}");
+            }
             mirror::Event::Input { enabled, reason } => {
                 println!("· input {}{}", if enabled { "enabled" } else { "DISABLED" }, if reason.is_empty() { String::new() } else { format!(" ({reason})") });
                 // HUBLOT_MOUSE="800,400" — move the remote pointer there. Verifiable from outside

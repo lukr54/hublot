@@ -121,7 +121,19 @@ async fn serve_connection(
     // Who is allowed in is `agent-core`'s decision, identically for both agents. This file used to
     // carry its own copy of it, which is exactly how two copies of a security rule drift apart —
     // and they had: the audit log and the pre-authentication size cap only ever existed over there.
-    agent_core::authenticate(&conn, &mut send, &mut recv, &id, pairing_open).await?;
+    // A text console has no desktop and nobody sitting at it, so the approve-on-the-machine flow
+    // cannot work here and says so instead of failing vaguely. This leg pairs with its token.
+    agent_core::authenticate(
+        &conn,
+        &mut send,
+        &mut recv,
+        &id,
+        pairing_open,
+        &agent_core::CannotAsk(
+            "this agent has no screen to ask on — pair it with the token it printed",
+        ),
+    )
+    .await?;
 
     // Injection is optional: an agent that cannot open /dev/uinput still mirrors perfectly well,
     // and saying so beats swallowing keystrokes in silence.

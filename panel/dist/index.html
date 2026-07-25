@@ -13,6 +13,7 @@
       <nav id="tabs">
         <button class="tab" data-view="shell" aria-selected="true">shell</button>
         <button class="tab" data-view="mirror" aria-selected="false">mirror</button>
+        <button class="tab" data-view="share" aria-selected="false">share this PC</button>
         <button class="tab" data-view="settings" aria-selected="false">settings</button>
       </nav>
       <span id="detail"></span>
@@ -34,14 +35,59 @@
       </div>
       <div id="panes"></div>
       <form id="pair" hidden>
-        <h1>Pair with the host agent</h1>
-        <p>Run <code>host-agent --pairing</code> on the host and paste what it prints.</p>
-        <input id="pair-addr" placeholder="192.168.1.10:7842" spellcheck="false" />
-        <input id="pair-fp" placeholder="fingerprint (AA:BB:…)" spellcheck="false" />
-        <input id="pair-token" type="password" placeholder="token" autocomplete="off" />
-        <button type="submit">Pair &amp; connect</button>
+        <h1>Add a machine</h1>
+        <p>
+          On the machine you want to control, open hublot and click <b>share this PC</b>. It shows
+          you its address. Type that here, and approve the request when it appears there.
+        </p>
+        <input id="pair-addr" placeholder="192.168.1.30:7843" spellcheck="false" />
+        <button type="submit">Connect</button>
+        <details id="pair-manual">
+          <summary>It's a Proxmox or Linux console</summary>
+          <p class="fine">
+            A text console has no screen to ask on, so it pairs the old way: run
+            <code>host-agent --pairing</code> there and paste what it prints.
+          </p>
+          <input id="pair-fp" placeholder="fingerprint (AA:BB:…)" spellcheck="false" />
+          <input id="pair-token" type="password" placeholder="token" autocomplete="off" />
+        </details>
         <p class="fine warn" id="pair-error"></p>
       </form>
+    </main>
+
+    <main id="share" hidden>
+      <section>
+        <h2>Let another hublot control this PC</h2>
+        <p>
+          Start the agent here, then type this machine's address into the panel on the other
+          computer. A request will appear on this screen and you approve it — nothing to copy.
+        </p>
+        <div class="row">
+          <span id="sh-dot" class="dot" data-state="idle"></span>
+          <span id="sh-state">checking…</span>
+        </div>
+        <div class="row">
+          <button id="sh-start">Start sharing now</button>
+          <button id="sh-install">Start at logon &amp; allow through firewall…</button>
+        </div>
+        <p class="fine" id="sh-msg"></p>
+      </section>
+
+      <section id="sh-addr-box" hidden>
+        <h2>This machine's address</h2>
+        <p>Type this into the other computer's mirror tab.</p>
+        <div id="sh-address"></div>
+      </section>
+
+      <section>
+        <h2>What the other computer gets</h2>
+        <p class="fine">
+          Everything on this screen, this keyboard and this mouse, and the clipboard in both
+          directions. Approve a request only if the six digits match what its panel is showing —
+          that is what proves nothing is sitting in between.
+        </p>
+        <p class="fine" id="sh-detail"></p>
+      </section>
     </main>
 
     <main id="settings" hidden>

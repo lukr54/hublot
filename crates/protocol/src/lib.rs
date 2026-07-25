@@ -86,7 +86,16 @@ pub struct Screen {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Auth {
     /// First contact: present the agent's printed token to have our certificate enrolled.
+    ///
+    /// Still how the console agent pairs, because a text VT has nobody to ask — see `Approve`.
     Enrol { token: String },
+    /// First contact, with a human at the other machine.
+    ///
+    /// Nothing is transcribed: the agent asks whoever is sitting at it whether to allow this
+    /// certificate, showing six digits derived from both certificates that the user compares
+    /// against the same six digits on the panel. An agent that has no way to ask — a headless
+    /// console — refuses this and says so.
+    Approve,
     /// Every time after that. Carries nothing — the certificate did the talking.
     Certificate,
 }
@@ -131,6 +140,12 @@ pub enum ServerMsg {
     /// Enrolment succeeded; the client's certificate is now on the agent's allowlist and the token
     /// will not be accepted again.
     Enrolled,
+    /// "I am asking the person at this machine." Carries the six digits the panel must display so
+    /// the user can compare them with the ones on the agent's own screen.
+    ///
+    /// Sent *before* the agent blocks on the dialog, so the panel can show the number while the
+    /// user is still looking at the other machine rather than after they have decided.
+    Confirm { sas: String },
     /// Geometry of a graphical desktop. Sent once on connect and whenever it changes.
     ScreenInfo { w: u16, h: u16 },
     /// Text copied on the remote machine, offered to the panel's.

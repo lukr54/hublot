@@ -79,14 +79,43 @@ body { display: flex; flex-direction: column; }
 .tab:hover { color: var(--ink); }
 .tab[aria-selected="true"] { background: #21262d; color: var(--ink); }
 
-#settings {
+#settings, #share {
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 14px 16px;
   user-select: text;
 }
-#settings[hidden] { display: none; }
+#settings[hidden], #share[hidden] { display: none; }
+#share section { margin-bottom: 20px; max-width: 620px; }
+#share h2 { font-size: 13px; margin: 0 0 4px; font-weight: 600; }
+#share p { margin: 0 0 8px; color: var(--dim); font-size: 12px; }
+#share .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#share button {
+  background: #21262d; border: 1px solid var(--edge); border-radius: 6px;
+  color: var(--ink); padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer;
+}
+#share button:hover:not(:disabled) { background: #30363d; }
+#share button:disabled { opacity: 0.5; cursor: default; }
+#share .fine { font-size: 11px; }
+
+/* The six digits, and this machine's address — both exist to be read across a room, so they get
+   the size that implies. */
+.sas {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 26px; letter-spacing: 0.14em;
+  color: var(--ink); margin: 6px 0;
+}
+.sas.addr { font-size: 18px; letter-spacing: 0.04em; }
+
+/* Shown inside a pane while the other machine is deciding. */
+.confirm {
+  background: #161b22; border: 1px solid var(--busy); border-radius: 6px;
+  padding: 10px 12px; margin-bottom: 8px;
+}
+.confirm p { margin: 0; font-size: 12px; color: var(--ink); }
+.confirm .fine { font-size: 11px; color: var(--dim); }
+.confirm .sas { color: var(--busy); }
 #settings section { margin-bottom: 20px; max-width: 620px; }
 #settings h2 { font-size: 13px; margin: 0 0 4px; font-weight: 600; }
 #settings p { margin: 0 0 8px; color: var(--dim); font-size: 12px; }
@@ -233,6 +262,9 @@ button.vt:hover { background: #30363d; color: var(--ink); }
   color: var(--ink); padding: 8px 10px; font: inherit; user-select: text;
 }
 #pair input:focus { outline: none; border-color: #388bfd; }
+#pair details { max-width: min(380px, 70vw); }
+#pair summary { color: var(--dim); font-size: 12px; cursor: pointer; }
+#pair details input { margin-top: 8px; }
 #pair button {
   background: #21262d; border: 1px solid var(--edge); border-radius: 6px;
   color: var(--ink); padding: 8px 10px; font: inherit; cursor: pointer;

@@ -1420,6 +1420,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tokio",
  "winclip",
+ "windows",
 ]
 
 [[package]]

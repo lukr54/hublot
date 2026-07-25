@@ -14,6 +14,8 @@
 //! * **One writer.** termproxy panics on concurrent writes, so every outbound frame — input, resize
 //!   and keepalive — funnels through a single `select!` loop.
 
+mod share;
+
 use std::sync::Mutex;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -535,8 +537,14 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
         .addr
         .parse()
         .map_err(|_| format!("`{}` is not a host:port address", target.addr))?;
-    let fingerprint =
-        protocol::pin::parse_fingerprint(&target.fingerprint).map_err(|e| e.to_string())?;
+    // No fingerprint means we have never paired with this machine. Rather than refuse, connect
+    // without a pin and ask the person sitting at it — the six digits shown on both screens are
+    // what turns the certificate we observe into one we trust.
+    let fingerprint = if target.fingerprint.trim().is_empty() {
+        None
+    } else {
+        Some(protocol::pin::parse_fingerprint(&target.fingerprint).map_err(|e| e.to_string())?)
+    };
 
     // Our own certificate lives beside the config. Its fingerprint is our identity to the agent,
     // so this file is what "already paired" actually means. One certificate serves every target:
@@ -572,13 +580,15 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
                 return;
             }
 
-            // A stored token means we have not enrolled yet; enrolment spends it and we fall back
-            // to certificate auth from then on. Keyed by address, so pairing a second machine does
-            // not disturb the first.
-            let auth = agent_keyring(&token_addr)
-                .ok()
-                .and_then(|e| e.get_password().ok())
-                .map_or(protocol::Auth::Certificate, |token| protocol::Auth::Enrol { token });
+            // Three ways to introduce ourselves, in order of what we know:
+            //   * a stored token — the console agent's way, typed in by hand and spent once;
+            //   * nothing pinned yet — ask the person at that machine to approve us;
+            //   * otherwise the certificate, which is the steady state.
+            let auth = match agent_keyring(&token_addr).ok().and_then(|e| e.get_password().ok()) {
+                Some(token) => protocol::Auth::Enrol { token },
+                None if fingerprint.is_none() => protocol::Auth::Approve,
+                None => protocol::Auth::Certificate,
+            };
 
             status("connecting", addr.to_string());
 
@@ -619,12 +629,33 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
                 }
                 match ev {
                 mirror::Event::Connected => status("connected", addr.to_string()),
-                mirror::Event::Enrolled => {
+                mirror::Event::Confirm { sas } => {
+                    let _ = app.emit(
+                        "mirror:confirm",
+                        serde_json::json!({ "target": index, "sas": sas }),
+                    );
+                }
+                mirror::Event::Enrolled { fingerprint } => {
                     // The token has done its one job. Delete it rather than leave a second, weaker
                     // way in sitting in the credential store.
                     if let Ok(entry) = agent_keyring(&token_addr) {
                         let _ = entry.delete_credential();
                     }
+                    // An approval pairing learns the certificate here, and it has to be written
+                    // down now: every later connection pins it, and if this is lost the machine
+                    // would silently fall back to asking for approval again.
+                    if !fingerprint.is_empty() {
+                        if let Some(s) = app.try_state::<AppState>() {
+                            let mut cfg = s.config.lock().unwrap();
+                            if let Some(t) = cfg.agents.get_mut(index) {
+                                t.fingerprint = fingerprint.clone();
+                            }
+                            if let Ok(json) = serde_json::to_string_pretty(&*cfg) {
+                                let _ = std::fs::write(config_path(&app), json);
+                            }
+                        }
+                    }
+                    let _ = app.emit("mirror:confirm", serde_json::json!({ "target": index, "sas": null }));
                     status("connected", "paired".into());
                 }
                 mirror::Event::Input { enabled, reason } => {
@@ -707,6 +738,34 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
         }
     });
     Ok(())
+}
+
+// ── sharing this PC ─────────────────────────────────────────────────────────────────────────────
+
+/// The port this machine's own agent listens on. Fixed rather than configurable: it is one number
+/// that has to agree between two machines, and a setting for it would be one more thing to get
+/// wrong for no benefit anyone has asked for.
+const SHARE_PORT: u16 = 7843;
+
+#[tauri::command]
+fn share_status(app: AppHandle) -> share::ShareStatus {
+    share::status(&app, SHARE_PORT)
+}
+
+#[tauri::command]
+fn share_start(app: AppHandle) -> Result<(), String> {
+    share::start(&app, SHARE_PORT)
+}
+
+/// `allow` is the address permitted through the firewall — an address, or `LocalSubnet`.
+#[tauri::command]
+#[cfg(windows)]
+fn share_install(app: AppHandle, allow: String) -> Result<(), String> {
+    let allow = allow.trim();
+    if allow.is_empty() {
+        return Err("no address to allow".into());
+    }
+    share::install_elevated(&app, allow)
 }
 
 // ── window ──────────────────────────────────────────────────────────────────────────────────────
@@ -811,6 +870,9 @@ fn main() {
             set_hotkey,
             forget_pve_credential,
             set_visible,
+            share_status,
+            share_start,
+            share_install,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

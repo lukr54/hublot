@@ -163,16 +163,47 @@ async fn refuse(send: &mut quinn::SendStream, why: &str) {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), send.stopped()).await;
 }
 
+/// How this agent asks a human whether to admit a stranger.
+///
+/// A Windows agent puts a dialog on the desktop it is mirroring. A console agent has no desktop and
+/// no one to ask, so it says so and refuses — which is why this is a trait object rather than an
+/// assumption baked into the handshake.
+pub trait Approver: Send + Sync {
+    /// `peer` is where the request came from, `sas` the six digits the panel is displaying.
+    /// Blocking: it is a person deciding.
+    fn ask(&self, peer: &str, sas: &str) -> bool;
+
+    /// Shown to the panel when this agent cannot ask anyone.
+    fn why_not(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// For agents with nobody to ask.
+pub struct CannotAsk(pub &'static str);
+
+impl Approver for CannotAsk {
+    fn ask(&self, _peer: &str, _sas: &str) -> bool {
+        false
+    }
+    fn why_not(&self) -> Option<&'static str> {
+        Some(self.0)
+    }
+}
+
 /// Read the client's `Hello` and decide whether to let it in.
 ///
-/// The token authorises **enrolment only**, once, and only while pairing is open. Sessions are
-/// authorised by the client certificate the TLS handshake already proved possession of.
+/// Two ways in for a certificate nobody has seen before, and they suit different machines:
+/// a **token**, printed by the agent and typed into the panel, which is all a headless console can
+/// offer; or **approval**, where the agent asks the person sitting at it. Everything after first
+/// contact is the client certificate the TLS handshake already proved possession of.
 pub async fn authenticate(
     conn: &quinn::Connection,
     send: &mut quinn::SendStream,
     recv: &mut quinn::RecvStream,
     id: &Identity,
     pairing_open: bool,
+    approver: &dyn Approver,
 ) -> Result<String> {
     let peer = conn.remote_address();
     let Some(fingerprint) = peer_fingerprint(conn) else {
@@ -200,6 +231,41 @@ pub async fn authenticate(
             refuse(send, "certificate not enrolled").await;
             id.audit(&format!("{peer} {fingerprint} REFUSED unenrolled certificate"));
             bail!("{peer}: unenrolled certificate {fingerprint}");
+        }
+        Auth::Approve => {
+            if !pairing_open {
+                refuse(send, "pairing is closed; restart the agent with --pair").await;
+                id.audit(&format!("{peer} {fingerprint} REFUSED approval while pairing closed"));
+                bail!("{peer}: approval attempted while pairing closed");
+            }
+            if let Some(why) = approver.why_not() {
+                refuse(send, why).await;
+                id.audit(&format!("{peer} {fingerprint} REFUSED approval unavailable"));
+                bail!("{peer}: cannot ask for approval — {why}");
+            }
+
+            // Derived from both certificates, so a machine in the middle cannot show the same
+            // number to both ends. See `pinning::sas`.
+            let ours = pinning::fingerprint_of(&id.cert);
+            let theirs = pinning::parse_fingerprint(&fingerprint)?;
+            let sas = pinning::sas(&ours, &theirs);
+
+            // Sent before we block, so the panel can show the digits while the user is still
+            // looking at this machine rather than after they have already decided.
+            protocol::write_msg(send, &ServerMsg::Confirm { sas: sas.clone() }).await?;
+            id.audit(&format!("{peer} {fingerprint} ASKED approval, sas {sas}"));
+
+            // The dialog blocks for as long as a person takes to read it, so it must not sit on a
+            // runtime worker: `block_in_place` moves the rest of the runtime off this thread.
+            let allowed = tokio::task::block_in_place(|| approver.ask(&peer.to_string(), &sas));
+            if !allowed {
+                refuse(send, "the person at that machine declined").await;
+                id.audit(&format!("{peer} {fingerprint} REFUSED by the user"));
+                bail!("{peer}: approval declined");
+            }
+            id.enrol(&fingerprint)?;
+            id.audit(&format!("{peer} {fingerprint} ENROLLED by approval, sas {sas}"));
+            protocol::write_msg(send, &ServerMsg::Enrolled).await?;
         }
         Auth::Enrol { token } => {
             if !pairing_open {

@@ -15,6 +15,8 @@
 //!   win-agent               serve
 
 #[cfg(windows)]
+mod approve;
+#[cfg(windows)]
 mod autostart;
 #[cfg(windows)]
 mod capture;
@@ -195,7 +197,7 @@ async fn serve(
 
     let conn = incoming.await.context("handshake")?;
     let (mut send, mut recv) = conn.accept_bi().await.context("accepting stream")?;
-    agent_core::authenticate(&conn, &mut send, &mut recv, &id, pairing_open).await?;
+    agent_core::authenticate(&conn, &mut send, &mut recv, &id, pairing_open, &approve::Desktop).await?;
 
     protocol::write_msg(&mut send, &ServerMsg::ScreenInfo { w: screen_w, h: screen_h }).await?;
     protocol::write_msg(&mut send, &ServerMsg::Input { enabled: true, reason: String::new() })

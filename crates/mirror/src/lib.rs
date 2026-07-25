@@ -19,8 +19,15 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub enum Event {
     Connected,
-    /// Our certificate was just added to the agent's allowlist; the token is spent.
-    Enrolled,
+    /// The agent is asking the person at that machine whether to allow us. These six digits are
+    /// showing on its screen too, and the user compares them.
+    Confirm { sas: String },
+    /// Our certificate was just added to the agent's allowlist.
+    ///
+    /// Carries the fingerprint we observed, because for an approval pairing this is the moment the
+    /// caller learns which certificate to pin from now on — a first contact has nothing to pin
+    /// until a human has confirmed it.
+    Enrolled { fingerprint: String },
     /// Whether this session may inject keys, and why not if it may not.
     Input { enabled: bool, reason: String },
     Screen(Screen),
@@ -65,16 +72,31 @@ impl ClientIdentity {
     }
 }
 
-fn client_config(server_fingerprint: [u8; 32], id: &ClientIdentity) -> Result<quinn::ClientConfig> {
+/// What we know about the machine we are dialling, which on a first contact is nothing.
+type Observed = Arc<std::sync::Mutex<Option<[u8; 32]>>>;
+
+fn client_config(
+    server_fingerprint: Option<[u8; 32]>,
+    id: &ClientIdentity,
+) -> Result<(quinn::ClientConfig, Option<Observed>)> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
+    // Pin when we know what to pin to. On a first contact we do not, so the certificate is merely
+    // *recorded* — it becomes trusted only once a human has compared six digits on both machines,
+    // and from the next connection onwards this branch is never taken again for that machine.
+    let (verifier, observed): (Arc<dyn rustls::client::danger::ServerCertVerifier>, _) =
+        match server_fingerprint {
+            Some(fp) => (Arc::new(protocol::pin::PinnedCert::new(fp, provider.clone())), None),
+            None => {
+                let tofu = protocol::pin::TrustOnFirstUse::new(provider.clone());
+                let seen = tofu.observed();
+                (Arc::new(tofu), Some(seen))
+            }
+        };
     let mut tls = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()
         .context("tls versions")?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(protocol::pin::PinnedCert::new(
-            server_fingerprint,
-            provider,
-        )))
+        .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(
             vec![rustls::pki_types::CertificateDer::from(id.cert.clone())],
             rustls::pki_types::PrivatePkcs8KeyDer::from(id.key.clone()).into(),
@@ -97,7 +119,7 @@ fn client_config(server_fingerprint: [u8; 32], id: &ClientIdentity) -> Result<qu
         std::time::Duration::from_secs(30).try_into().context("idle timeout")?,
     ));
     cfg.transport_config(Arc::new(transport));
-    Ok(cfg)
+    Ok((cfg, observed))
 }
 
 /// Connect and stream until the link drops.
@@ -107,7 +129,7 @@ fn client_config(server_fingerprint: [u8; 32], id: &ClientIdentity) -> Result<qu
 /// release, and a `read` cancelled mid-message would desynchronise the stream.
 pub async fn stream(
     addr: SocketAddr,
-    server_fingerprint: [u8; 32],
+    server_fingerprint: Option<[u8; 32]>,
     identity: ClientIdentity,
     auth: Auth,
     tx: mpsc::Sender<Event>,
@@ -115,7 +137,8 @@ pub async fn stream(
 ) -> Result<()> {
     let mut endpoint =
         quinn::Endpoint::client("0.0.0.0:0".parse().unwrap()).context("binding client endpoint")?;
-    endpoint.set_default_client_config(client_config(server_fingerprint, &identity)?);
+    let (cfg, observed) = client_config(server_fingerprint, &identity)?;
+    endpoint.set_default_client_config(cfg);
 
     let conn = endpoint
         .connect(addr, "hublot-agent")
@@ -136,12 +159,16 @@ pub async fn stream(
         }
     });
 
-    let result = read_loop(&mut recv, &tx).await;
+    let result = read_loop(&mut recv, &tx, observed).await;
     writer.abort();
     result
 }
 
-async fn read_loop(recv: &mut quinn::RecvStream, tx: &mpsc::Sender<Event>) -> Result<()> {
+async fn read_loop(
+    recv: &mut quinn::RecvStream,
+    tx: &mpsc::Sender<Event>,
+    observed: Option<Observed>,
+) -> Result<()> {
     let mut screen: Option<Screen> = None;
     loop {
         let msg: ServerMsg = match protocol::read_msg(recv).await {
@@ -166,8 +193,20 @@ async fn read_loop(recv: &mut quinn::RecvStream, tx: &mpsc::Sender<Event>) -> Re
                 }
                 current.cursor = cursor;
             }
+            ServerMsg::Confirm { sas } => {
+                let _ = tx.send(Event::Confirm { sas }).await;
+                continue;
+            }
             ServerMsg::Enrolled => {
-                let _ = tx.send(Event::Enrolled).await;
+                // On an approval pairing this is the first moment the certificate means anything:
+                // a human has just said the digits matched, so the fingerprint we recorded during
+                // the handshake is now the one to pin forever after.
+                let fingerprint = observed
+                    .as_ref()
+                    .and_then(|o| *o.lock().unwrap())
+                    .map(|fp| protocol::pin::hex(&fp))
+                    .unwrap_or_default();
+                let _ = tx.send(Event::Enrolled { fingerprint }).await;
                 continue;
             }
             ServerMsg::Input { enabled, reason } => {
