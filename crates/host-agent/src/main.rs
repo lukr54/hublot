@@ -71,7 +71,7 @@ async fn input_loop(mut recv: quinn::RecvStream, mut kb: uinput::VirtualKeyboard
                         return;
                     }
                 }
-                if received % 8 == 0 {
+                if received.is_multiple_of(8) {
                     eprintln!("[hublot] input: {received} received, {injected} injected");
                 }
             }

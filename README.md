@@ -71,13 +71,22 @@ cargo +nightly fuzz run client_msg -- -rss_limit_mb=512
 
 ## Installing
 
+**Build the agent first.** The panel declares `win-agent.exe` as a bundle resource, and Tauri checks
+that the file exists on every build of the panel — not only when producing an installer — so a plain
+`cargo build --workspace` on a fresh clone fails until this has run once:
+
+```bash
+cargo build --release -p win-agent
+```
+
 ```bash
 cargo tauri build
 ```
 
 produces `target/release/bundle/nsis/hublot_<version>_x64-setup.exe`, a per-user installer needing
 no administrator rights. **`win-agent.exe` is bundled inside it**, so installing the panel also
-places the Windows desktop agent alongside it.
+places the Windows desktop agent alongside it — which is also why the check is a hard error rather
+than a warning: an installer that quietly shipped without the agent would be worse.
 
 On a Windows machine you want to *mirror*, copy `win-agent.exe` there — full instructions in
 [deploy/windows-agent-README.txt](deploy/windows-agent-README.txt), which ships beside it. The short

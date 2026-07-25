@@ -23,6 +23,11 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # The panel declares win-agent.exe as a Tauri bundle resource, and tauri-build checks that the
+      # file exists on *every* build of the panel — not only when bundling an installer. So the
+      # release agent has to exist before anything else touches the workspace, debug included.
+      # This ordering is a real dependency, not a CI quirk: see README, "Installing".
+      - run: cargo build --release -p win-agent
       - run: cargo build --workspace
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
