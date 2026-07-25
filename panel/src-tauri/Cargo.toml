@@ -1,0 +1,27 @@
+[package]
+name = "hublot-panel"
+description = "The Hublot panel — a hotkey-summoned console window on the main PC"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pve = { path = "../../crates/pve" }
+mirror = { path = "../../crates/mirror" }
+protocol = { path = "../../crates/protocol" }
+anyhow.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+tauri = { version = "2", features = [] }
+tauri-plugin-global-shortcut = "2"
+# Windows Credential Manager (DPAPI-backed). DECISIONS.md D1: the password is a hypervisor
+# credential and never belongs in a config file.
+keyring = { version = "3", features = ["windows-native"] }
+base64 = "0.22"

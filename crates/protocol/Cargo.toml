@@ -1,0 +1,14 @@
+[package]
+name = "protocol"
+description = "Hublot's agent wire format and the shared TLS certificate-pinning primitive"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pinning = { path = "../pinning" }
+anyhow.workspace = true
+serde.workspace = true
+postcard = { version = "1", features = ["use-std"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }

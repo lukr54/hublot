@@ -1,0 +1,34 @@
+﻿[workspace]
+resolver = "2"
+members = [
+    "crates/pinning",
+    "crates/protocol",
+    "crates/agent-core",
+    "crates/win-agent",
+    "crates/pve",
+    "crates/mirror",
+    "crates/spike-term",
+    "crates/spike-mirror",
+    "crates/spike-screen",
+    "panel/src-tauri",
+]
+# Linux-only; built on the target box, not here.
+exclude = ["crates/spike-console", "crates/host-agent"]
+
+[workspace.package]
+edition = "2021"
+version = "0.0.0"
+license = "MIT"
+publish = false
+
+[profile.release]
+opt-level = 3
+
+[workspace.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-std", "io-util"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"

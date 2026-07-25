@@ -1,0 +1,12 @@
+[package]
+name = "spike-console"
+description = "Phase 0b — prove the console mirror (/dev/vcsu + /dev/vcsa) and key injection (/dev/uinput), plus the key-release-on-death safety property"
+edition = "2021"
+version = "0.0.0"
+license = "MIT"
+publish = false
+
+# Deliberately libc-only. This code is the seed of host-agent, which runs on the hypervisor and
+# whose dependency tree is part of the attack surface (THREAT-MODEL.md §5).
+[dependencies]
+libc = "0.2"

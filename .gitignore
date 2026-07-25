@@ -1,0 +1,14 @@
+# Build output
+/target
+**/target
+panel/src-tauri/gen/
+
+# Agent and panel identities — private keys and pairing tokens. Never commit these.
+*.der
+*.pem
+token
+clients
+.hublot-*/
+
+# Node is only used to vendor xterm; the vendored files themselves are committed.
+node_modules/

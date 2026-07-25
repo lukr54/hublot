@@ -1,0 +1,22 @@
+[package]
+name = "spike-screen"
+description = "Phase 6 spike — measure whether mirroring a Windows desktop is viable before designing any of it"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[target.'cfg(windows)'.dependencies]
+# Pinned to 0.61 so it unifies with the version tauri already pulls into the graph.
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Gdi",
+] }

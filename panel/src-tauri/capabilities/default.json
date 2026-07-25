@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the panel's frontend may ask the core to do. Deliberately narrow: it renders a terminal and moves its own window. Nothing here grants filesystem, shell, or network access — the console socket lives entirely in Rust.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-hide",
+    "core:window:allow-minimize",
+    "core:window:allow-close",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-is-always-on-top"
+  ]
+}

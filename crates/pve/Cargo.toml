@@ -1,0 +1,20 @@
+[package]
+name = "pve"
+description = "Proxmox VE API client: ticket auth, termproxy, console websocket, pinned TLS"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pinning = { path = "../pinning" }
+anyhow.workspace = true
+tokio.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+futures-util.workspace = true
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-manual-roots-no-provider"] }
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake", "__rustls-tls"] }
+urlencoding = "2"

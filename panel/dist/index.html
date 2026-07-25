@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>hublot</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header id="bar">
+      <span id="dot" class="dot" data-state="idle"></span>
+      <span id="title">hublot</span>
+      <nav id="tabs">
+        <button class="tab" data-view="shell" aria-selected="true">shell</button>
+        <button class="tab" data-view="mirror" aria-selected="false">mirror</button>
+        <button class="tab" data-view="settings" aria-selected="false">settings</button>
+      </nav>
+      <span id="detail"></span>
+      <span class="spacer"></span>
+      <button id="reconnect" title="Reconnect">⟳</button>
+      <button id="hide" title="Hide (Ctrl+Alt+H)">—</button>
+    </header>
+
+    <main id="term"></main>
+
+    <main id="mirror" hidden>
+      <div id="mbar">
+        <select id="target" title="Which machine to mirror"></select>
+        <span id="input-badge" class="badge" data-on="false">input off</span>
+        <span id="layout-warn" class="badge warnbadge" hidden></span>
+        <span class="spacer"></span>
+        <span class="vtlabel">switch VT</span>
+        <button class="vt" data-vt="1">1</button>
+        <button class="vt" data-vt="2">2</button>
+        <button class="vt" data-vt="3">3</button>
+        <button class="vt" data-vt="4">4</button>
+        <button class="vt" data-vt="5">5</button>
+        <button class="vt" data-vt="6">6</button>
+      </div>
+      <pre id="grid" aria-label="Mirrored console" tabindex="0"></pre>
+      <canvas id="screen" hidden tabindex="0" aria-label="Mirrored desktop"></canvas>
+      <form id="pair" hidden>
+        <h1>Pair with the host agent</h1>
+        <p>Run <code>host-agent --pairing</code> on the host and paste what it prints.</p>
+        <input id="pair-addr" placeholder="192.168.1.10:7842" spellcheck="false" />
+        <input id="pair-fp" placeholder="fingerprint (AA:BB:…)" spellcheck="false" />
+        <input id="pair-token" type="password" placeholder="token" autocomplete="off" />
+        <button type="submit">Pair &amp; connect</button>
+        <p class="fine warn" id="pair-error"></p>
+      </form>
+    </main>
+
+    <main id="settings" hidden>
+      <section>
+        <h2>Summon hotkey</h2>
+        <p>Click the field and press the combination you want.</p>
+        <div class="row">
+          <input id="hk" readonly placeholder="click, then press keys" />
+          <button id="hk-apply">Apply</button>
+        </div>
+        <p class="fine" id="hk-msg"></p>
+      </section>
+
+      <section>
+        <h2>Proxmox console (shell tab)</h2>
+        <div class="grid2">
+          <label>Host<input id="s-host" spellcheck="false" /></label>
+          <label>Port<input id="s-port" type="number" /></label>
+          <label>Node<input id="s-node" spellcheck="false" /></label>
+          <label>User<input id="s-user" spellcheck="false" /></label>
+        </div>
+        <label>Certificate fingerprint<input id="s-fp" spellcheck="false" /></label>
+      </section>
+
+      <section>
+        <h2>Mirror targets</h2>
+        <p>Any machine running the host agent — the Proxmox host, or a VM on it.</p>
+        <div id="targets"></div>
+        <button id="t-add">Add target</button>
+      </section>
+
+      <div class="row">
+        <button id="s-save">Save</button>
+        <button id="s-forget" class="danger">Forget Proxmox password</button>
+        <span class="fine" id="s-msg"></span>
+      </div>
+    </main>
+
+    <div id="gate" hidden>
+      <form id="gate-form">
+        <h1>Unlock the console</h1>
+        <p id="gate-who"></p>
+        <input id="gate-pw" type="password" autocomplete="off" spellcheck="false" />
+        <button type="submit">Store &amp; connect</button>
+        <p class="fine">
+          Stored in Windows Credential Manager, sealed with DPAPI. It never reaches this window
+          again — the console socket lives in the Rust process.
+        </p>
+        <p class="fine warn" id="gate-error"></p>
+      </form>
+    </div>
+
+    <script src="vendor/xterm.js"></script>
+    <script src="vendor/addon-fit.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

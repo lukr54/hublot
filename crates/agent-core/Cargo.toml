@@ -1,0 +1,18 @@
+[package]
+name = "agent-core"
+description = "Identity, pairing and the authenticated QUIC handshake — shared by every Hublot agent"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Platform-independent on purpose: what an agent captures differs wildly between a Linux console and
+# a Windows desktop, but who is allowed to connect does not.
+[dependencies]
+protocol = { path = "../protocol" }
+pinning = { path = "../pinning" }
+anyhow.workspace = true
+rustls.workspace = true
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rcgen = "0.13"
+getrandom = "0.2"
