@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A button that runs this workflow against whatever `main` is *now*.
+  #
+  # Worth having because GitHub's "Re-run jobs" does not do that: it checks out the commit the
+  # original run was for, so re-running a failed build after fixing it replays the failure exactly,
+  # workflow file included. That is confusing enough to have cost an afternoon once.
+  workflow_dispatch:
   # The advisory database moves without us touching anything, so the security job also runs on a
   # timer. A vulnerable dependency in the process that can type at a root console is worth hearing
   # about on a Monday rather than at the next commit.
