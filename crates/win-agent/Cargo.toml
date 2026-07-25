@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 protocol = { path = "../protocol" }
 agent-core = { path = "../agent-core" }
+winclip = { path = "../winclip" }
 anyhow.workspace = true
 tokio.workspace = true
 rustls.workspace = true

@@ -65,6 +65,17 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
+                // HUBLOT_CLIP="…" — push a value to the remote clipboard, so the inbound half of
+                // sync can be checked without a second panel.
+                if let Ok(text) = std::env::var("HUBLOT_CLIP") {
+                    let keys = keys_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        let n = text.chars().count();
+                        let _ = keys.send(protocol::ClientMsg::Clipboard { text }).await;
+                        eprintln!("  sent {n} chars to the remote clipboard");
+                    });
+                }
                 // HUBLOT_SWITCH_VT=2 — switch console by ioctl. Works even when this badge says
                 // input is off, which is the entire point (DECISIONS.md D13).
                 if let Ok(vt) = std::env::var("HUBLOT_SWITCH_VT") {
@@ -141,6 +152,11 @@ async fn main() -> Result<()> {
                 // The CLI cannot show pixels; reporting size is what makes it useful here, since
                 // bytes-per-update is the number that decides whether this leg is viable.
                 println!("  tile {w}x{h} at {x},{y} — {} bytes {mime}", data.len());
+            }
+            mirror::Event::Clipboard(text) => {
+                // Printing the text itself would splatter a password across the terminal the first
+                // time someone copies one; the length is what proves the path works.
+                println!("  clipboard from remote — {} chars", text.chars().count());
             }
             mirror::Event::Pointer { x, y, visible } => {
                 println!("  pointer {x},{y} visible={visible}");

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/pinning",
+    "crates/winclip",
     "crates/protocol",
     "crates/agent-core",
     "crates/win-agent",

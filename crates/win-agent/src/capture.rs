@@ -30,6 +30,7 @@ pub struct Capture {
 /// both. Pointer movement alone is the common case and must not force a repaint.
 pub enum Update {
     Tile(Tile),
+    Clipboard(String),
     Pointer { x: i16, y: i16, visible: bool },
     Shape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
 }

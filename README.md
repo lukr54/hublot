@@ -21,13 +21,33 @@ cannot do at all.
 ## Layout
 
 ```
+panel/                 the window itself — Tauri; the only piece with a UI
+crates/protocol/       the wire format, and the browser-key → evdev map. Shared by every other crate
+crates/pinning/        certificate pinning, both directions
+crates/mirror/         client half of the agent link — reassembles diffs into whole screens
+crates/agent-core/     agent identity, pairing, enrolment. Shared by both agents
+crates/winclip/        the Windows clipboard, text only. Shared by the panel and the Windows agent
 crates/pve/            Proxmox API client — ticket auth, termproxy, console websocket, pinned TLS
+crates/host-agent/     the Linux agent — /dev/vcsu out, /dev/uinput in          (Linux-only)
+crates/win-agent/      the Windows agent — Desktop Duplication out, SendInput in
 crates/spike-term/     Phase 0a — proves the tier-2 console path against the real host
-crates/spike-console/  Phase 0b — proves the mirror + injection (Linux-only; built on the target)
+crates/spike-console/  Phase 0b — proves the mirror + injection                 (Linux-only)
+crates/spike-screen/   Phase 6 — measures what a desktop actually costs to mirror
+crates/spike-mirror/   the agent link with no GUI in the way. If this works and the panel doesn't,
+                       the bug is in the panel
 ```
 
-`spike-console` is excluded from the workspace: it only compiles on Linux, and it is deliberately
-`libc`-only because it is the seed of `host-agent`, whose dependency tree is attack surface.
+`spike-console` is deliberately `libc`-only because it is the seed of `host-agent`, whose dependency
+tree is attack surface.
+
+**The Linux crates are not in `Cargo.toml`.** They cannot compile on Windows, so the workspace here
+describes the Windows half and [Cargo-linux.toml](Cargo-linux.toml) describes the other one. Build
+it after touching anything shared — `protocol` above all, since adding a message variant is exactly
+what makes `host-agent`'s match non-exhaustive without a word of warning on this side:
+
+```bash
+cp Cargo-linux.toml Cargo.toml && cargo build --release -p host-agent
+```
 
 ## Documents
 
@@ -63,6 +83,16 @@ session; a logon task reaches the same place directly.
 
 > Run `--install` from your own terminal. Task and registry changes made from a sandboxed shell can
 > be virtualised away and silently fail to take effect.
+
+## Clipboard
+
+Between Windows machines the clipboard follows you, both ways, automatically — copy on one, paste
+on the other. Text only, 256 KB, and content marked *"Clipboard Viewer Ignore"* (what password
+managers set) is skipped.
+
+There is **no off switch**, which is a deliberate trade and not an oversight: read
+[THREAT-MODEL.md](THREAT-MODEL.md) R10 before pointing this at a machine that isn't yours. The
+console leg doesn't participate at all — a text VT has no clipboard.
 
 ## Running the Phase 0 spikes
 

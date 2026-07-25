@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 pve = { path = "../../crates/pve" }
 mirror = { path = "../../crates/mirror" }
 protocol = { path = "../../crates/protocol" }
+winclip = { path = "../../crates/winclip" }
 anyhow.workspace = true
 tokio.workspace = true
 futures-util.workspace = true

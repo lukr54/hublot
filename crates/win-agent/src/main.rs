@@ -62,6 +62,9 @@ async fn main() -> anyhow::Result<()> {
     // One capture thread owns the DXGI objects and broadcasts encoded tiles. Capture blocks, so it
     // gets an OS thread rather than starving a runtime worker — same shape as the console watcher.
     let (tx, _) = broadcast::channel::<Arc<capture::Update>>(64);
+    // The last value we applied *from* the panel, so the watcher can tell it apart from something
+    // the user actually copied here.
+    let echo_guard: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let (info_tx, info_rx) = std::sync::mpsc::channel::<(u16, u16)>();
     {
         let tx = tx.clone();
@@ -92,6 +95,31 @@ async fn main() -> anyhow::Result<()> {
     }
     let (screen_w, screen_h) = info_rx.recv().context("capture thread never reported geometry")?;
 
+    // Clipboard watcher. Its own thread because the sequence-number check is a blocking syscall on
+    // a timer, and it must not compete with capture for the same wake-ups.
+    {
+        let tx = tx.clone();
+        let echo = echo_guard.clone();
+        std::thread::Builder::new().name("clipboard".into()).spawn(move || {
+            let mut seen = winclip::sequence();
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let now = winclip::sequence();
+                if now == seen {
+                    continue;
+                }
+                seen = now;
+                let Some(text) = winclip::get_text(protocol::MAX_CLIPBOARD) else { continue };
+                // Do not send back what we were just given: without this the two clipboards
+                // bounce a value between them forever.
+                if echo.lock().unwrap().as_deref() == Some(text.as_str()) {
+                    continue;
+                }
+                let _ = tx.send(Arc::new(capture::Update::Clipboard(text)));
+            }
+        })?;
+    }
+
     let endpoint = quinn::Endpoint::server(agent_core::server_config(&id)?, listen)
         .context("binding endpoint")?;
     eprintln!("[hublot] listening on {listen}");
@@ -102,9 +130,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     while let Some(incoming) = endpoint.accept().await {
-        let (id, tx) = (id.clone(), tx.clone());
+        let (id, tx, echo) = (id.clone(), tx.clone(), echo_guard.clone());
         tokio::spawn(async move {
-            if let Err(e) = serve(incoming, id, pairing_open, tx, screen_w, screen_h).await {
+            if let Err(e) = serve(incoming, id, pairing_open, tx, echo, screen_w, screen_h).await {
                 eprintln!("[hublot] connection ended: {e:#}");
             }
         });
@@ -118,6 +146,7 @@ async fn serve(
     id: std::sync::Arc<agent_core::Identity>,
     pairing_open: bool,
     tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Update>>,
+    echo: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     screen_w: u16,
     screen_h: u16,
 ) -> anyhow::Result<()> {
@@ -135,7 +164,8 @@ async fn serve(
     // The injector belongs to this connection. Dropping it releases everything held — which on
     // Windows we must do ourselves, since there is no kernel here to release a dying device's keys
     // the way there is for uinput.
-    let input_task = tokio::spawn(input_loop(recv, inject::Injector::new(screen_w, screen_h)));
+    let input_task =
+        tokio::spawn(input_loop(recv, inject::Injector::new(screen_w, screen_h), echo));
 
     let result = stream_tiles(&mut send, tx).await;
     input_task.abort();
@@ -143,11 +173,22 @@ async fn serve(
 }
 
 #[cfg(windows)]
-async fn input_loop(mut recv: quinn::RecvStream, mut inj: inject::Injector) {
+async fn input_loop(
+    mut recv: quinn::RecvStream,
+    mut inj: inject::Injector,
+    echo: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+) {
     use protocol::ClientMsg;
     eprintln!("[hublot] input loop ready");
     loop {
         match protocol::read_msg::<ClientMsg>(&mut recv).await {
+            Ok(ClientMsg::Clipboard { text }) => {
+                if text.len() <= protocol::MAX_CLIPBOARD {
+                    // Record before setting: the watcher may wake the instant we do.
+                    *echo.lock().unwrap() = Some(text.clone());
+                    winclip::set_text(&text);
+                }
+            }
             Ok(ClientMsg::Key { code, down }) => inj.key(code, down),
             Ok(ClientMsg::MouseMove { x, y }) => inj.move_to(x, y),
             Ok(ClientMsg::MouseButton { button, down }) => inj.button(button, down),
@@ -196,6 +237,7 @@ async fn stream_tiles(
                 format: t.format,
                 data: t.data.clone(),
             },
+            capture::Update::Clipboard(text) => ServerMsg::Clipboard { text: text.clone() },
             capture::Update::Pointer { x, y, visible } => {
                 ServerMsg::Pointer { x: *x, y: *y, visible: *visible }
             }

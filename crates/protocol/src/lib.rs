@@ -21,6 +21,11 @@ pub const ALPN: &[u8] = b"hublot/1";
 /// orders of magnitude of headroom and still bounds what a hostile peer can make us allocate.
 pub const MAX_MSG: usize = 1 << 20;
 
+/// Clipboard payloads above this are dropped rather than synced. Someone copying a large file's
+/// worth of text should not have it silently cross the network, and it bounds what a hostile peer
+/// can push into your clipboard.
+pub const MAX_CLIPBOARD: usize = 256 * 1024;
+
 /// One console cell: a Unicode character and the VGA attribute byte that goes with it.
 ///
 /// Attribute layout (the console's, not ours): bits 0–3 foreground, 4–6 background, bit 7 blink.
@@ -90,6 +95,8 @@ pub enum ClientMsg {
     Key { code: u16, down: bool },
     /// Release everything held. Sent on focus loss, view change, and window hide.
     ReleaseAll,
+    /// Text copied on the panel's machine, offered to the remote one.
+    Clipboard { text: String },
     /// Absolute pointer position, in the captured screen's own pixels.
     ///
     /// Absolute rather than relative on purpose: a lost or reordered motion message is corrected by
@@ -122,6 +129,8 @@ pub enum ServerMsg {
     Enrolled,
     /// Geometry of a graphical desktop. Sent once on connect and whenever it changes.
     ScreenInfo { w: u16, h: u16 },
+    /// Text copied on the remote machine, offered to the panel's.
+    Clipboard { text: String },
     /// Where the remote pointer is. Captured frames never contain it — Windows composites the
     /// cursor in hardware — so it travels separately and the viewer draws it.
     Pointer { x: i16, y: i16, visible: bool },

@@ -31,6 +31,8 @@ pub enum Event {
     /// Where the remote pointer is, and what it looks like — both arrive outside the frames.
     Pointer { x: i16, y: i16, visible: bool },
     PointerShape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
+    /// Text copied on the remote machine.
+    Clipboard(String),
     Closed(String),
 }
 
@@ -180,6 +182,10 @@ async fn read_loop(recv: &mut quinn::RecvStream, tx: &mpsc::Sender<Event>) -> Re
                 let _ = tx
                     .send(Event::Raster { x, y, w, h, mime: format.mime(), data })
                     .await;
+                continue;
+            }
+            ServerMsg::Clipboard { text } => {
+                let _ = tx.send(Event::Clipboard(text)).await;
                 continue;
             }
             ServerMsg::Pointer { x, y, visible } => {

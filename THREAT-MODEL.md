@@ -206,3 +206,32 @@ Anyone who can drive the panel can type as root on the hypervisor. There is no c
 command filtering, and there should not be — it is a keyboard. The defence is entirely in R6 plus
 the machine the panel runs on. Treat the panel's client certificate as equivalent to an SSH key for
 root on that host, because that is what it is.
+
+---
+
+# Revision 2026-07-25 — clipboard sync shipped, and what §6 asked for that it doesn't do
+
+## R10. Automatic clipboard sync is a standing exfiltration channel, by choice
+§6 said it: password managers, API keys and TOTP codes pass through the clipboard, and automatic
+sync means they land on the *other* machine's clipboard where any local process can read them. That
+is now the shipped behaviour, decided deliberately (DECISIONS.md **D14**) because both machines are
+the same person's and the friction of a manual push was judged not worth paying.
+
+Of §6's mitigations, what actually shipped:
+
+| §6 asked for | Shipped |
+|---|---|
+| Never sync to the Proxmox node | **Yes** — the console leg drops clipboard messages; a text VT has no clipboard |
+| Honour "Clipboard Viewer Ignore" | **Yes**, on read, on both ends |
+| Size cap | **Yes**, 256 KB, checked on receive too |
+| Format allowlist, sanitise `CF_HTML`/`CF_HDROP` | **Stronger** — text only, so those formats are never carried |
+| Avoid a feedback loop | **Yes** — echo guard on both sides |
+| Toggleable auto-sync / manual push | **No.** Not built. This is the gap. |
+
+The residual risk in one sentence: **anything you copy on either Windows machine is on both of them
+within half a second**, unless the application that put it there set the ignore marker. If a shared
+or less-trusted machine is ever added, the toggle stops being optional.
+
+The ignore marker deserves a second mention because it is easy to over-trust: it is a *courtesy*
+that a well-behaved application sets. A password pasted out of a text file, a browser field, or any
+manager that doesn't set it will cross the link.

@@ -112,6 +112,8 @@ struct AppState {
     mirror_keys: Mutex<Option<tokio::sync::mpsc::Sender<protocol::ClientMsg>>>,
     /// Exactly which accelerator is live, so a rebind releases that one and no other.
     registered_hotkey: Mutex<Option<String>>,
+    /// The last clipboard value we applied *from* the remote machine.
+    clipboard_echo: Mutex<Option<String>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -526,6 +528,14 @@ async fn mirror_connect(app: AppHandle, state: State<'_, AppState>) -> Result<()
                 mirror::Event::ScreenInfo { w, h } => {
                     let _ = app.emit("mirror:screeninfo", serde_json::json!({ "w": w, "h": h }));
                 }
+                mirror::Event::Clipboard(text) => {
+                    // Record before setting, because our own watcher may wake the instant we do —
+                    // without this the two clipboards pass a value back and forth forever.
+                    if let Some(s) = app.try_state::<AppState>() {
+                        *s.clipboard_echo.lock().unwrap() = Some(text.clone());
+                    }
+                    winclip::set_text(&text);
+                }
                 mirror::Event::Pointer { x, y, visible } => {
                     let _ = app.emit(
                         "mirror:pointer",
@@ -680,6 +690,35 @@ fn main() {
             let cfg = load_config(&handle);
             let hotkey = cfg.hotkey.clone();
             *app.state::<AppState>().config.lock().unwrap() = cfg;
+
+            // One clipboard watcher for the whole app rather than one per connection. It only has
+            // anywhere to send when a mirror session is up, and the sequence number makes the idle
+            // case a single cheap syscall.
+            {
+                let h = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut seen = winclip::sequence();
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                        let now = winclip::sequence();
+                        if now == seen {
+                            continue;
+                        }
+                        seen = now;
+                        // `get_text` returns nothing for content marked "Clipboard Viewer Ignore",
+                        // which is how password managers ask not to be copied around.
+                        let Some(text) = winclip::get_text(protocol::MAX_CLIPBOARD) else { continue };
+                        let Some(state) = h.try_state::<AppState>() else { continue };
+                        if state.clipboard_echo.lock().unwrap().as_deref() == Some(text.as_str()) {
+                            continue;
+                        }
+                        let keys = state.mirror_keys.lock().unwrap();
+                        if let Some(tx) = keys.as_ref() {
+                            let _ = tx.try_send(protocol::ClientMsg::Clipboard { text });
+                        }
+                    }
+                });
+            }
 
             // Same path the settings pane uses, so there is one implementation of binding.
             if let Err(e) = bind_hotkey(&handle, &hotkey) {

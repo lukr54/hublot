@@ -183,6 +183,13 @@ async fn input_loop(mut recv: quinn::RecvStream, mut kb: uinput::VirtualKeyboard
                     Err(e) => eprintln!("[hublot] could not switch to tty{vt}: {e}"),
                 }
             }
+            // The panel speaks one protocol to both kinds of agent, so it sends these without
+            // asking what is on the other end. A text console has neither a pointer nor a
+            // clipboard, so they are dropped here rather than made conditional over there.
+            Ok(ClientMsg::MouseMove { .. })
+            | Ok(ClientMsg::MouseButton { .. })
+            | Ok(ClientMsg::MouseScroll { .. })
+            | Ok(ClientMsg::Clipboard { .. }) => {}
             // Every exit below used to be silent, which is exactly why a dead input loop was
             // indistinguishable from a working one that received nothing.
             Ok(ClientMsg::Hello { .. }) => {
