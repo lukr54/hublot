@@ -25,20 +25,14 @@
 
     <main id="mirror" hidden>
       <div id="mbar">
-        <select id="target" title="Which machine to mirror"></select>
-        <span id="input-badge" class="badge" data-on="false">input off</span>
+        <!-- One chip per configured machine. Click to show it; click again to put it away.
+             Two can be up at once, which is what the split view is. -->
+        <div id="chips" role="group" aria-label="Machines"></div>
         <span id="layout-warn" class="badge warnbadge" hidden></span>
         <span class="spacer"></span>
-        <span class="vtlabel">switch VT</span>
-        <button class="vt" data-vt="1">1</button>
-        <button class="vt" data-vt="2">2</button>
-        <button class="vt" data-vt="3">3</button>
-        <button class="vt" data-vt="4">4</button>
-        <button class="vt" data-vt="5">5</button>
-        <button class="vt" data-vt="6">6</button>
+        <button id="pair-new" title="Pair another machine">+ pair</button>
       </div>
-      <pre id="grid" aria-label="Mirrored console" tabindex="0"></pre>
-      <canvas id="screen" hidden tabindex="0" aria-label="Mirrored desktop"></canvas>
+      <div id="panes"></div>
       <form id="pair" hidden>
         <h1>Pair with the host agent</h1>
         <p>Run <code>host-agent --pairing</code> on the host and paste what it prints.</p>

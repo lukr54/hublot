@@ -98,107 +98,332 @@ listen("console:status", (e) => {
 });
 
 // ── mirror (tier 1) ─────────────────────────────────────────────────────────
+//
+// One pane per machine on screen, up to two. Everything to do with a mirrored machine lives in a
+// `Pane`: its grid or its canvas, its own cursor, its own input badge, its own idea of whether it
+// is connected. Events arrive tagged with a target index, because once two sessions are live an
+// untagged frame is a frame painted into the wrong pane.
 
 const mir = {
   pane: document.getElementById("mirror"),
-  grid: document.getElementById("grid"),
+  panes: document.getElementById("panes"),
+  chips: document.getElementById("chips"),
+  pairNew: document.getElementById("pair-new"),
   form: document.getElementById("pair"),
   addr: document.getElementById("pair-addr"),
   fp: document.getElementById("pair-fp"),
   token: document.getElementById("pair-token"),
   error: document.getElementById("pair-error"),
 };
+const layoutWarn = document.getElementById("layout-warn");
 
 function esc(s) {
   return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 }
 
-/// Paint a console frame. Cells are grouped into spans by attribute, so a row of plain text is one
-/// span rather than eighty — the difference between a repaint you notice and one you don't.
-function paint(f) {
-  const attrs = bytes(f.attrs);
-  const rows = [];
-  for (let y = 0; y < f.text.length; y++) {
-    // Iterate code points, not UTF-16 units: one console cell is one code point, and indexing by
-    // unit would drift the moment anything outside the BMP appears.
-    const chars = Array.from(f.text[y]);
-    let html = "";
-    let run = "";
-    let runAttr = -1;
-    const flush = () => {
-      if (!run) return;
-      const fg = runAttr & 0x0f;
-      const bg = (runAttr >> 4) & 0x07;
-      html += `<span class="f${fg} b${bg}">${esc(run)}</span>`;
-      run = "";
-    };
-    for (let x = 0; x < chars.length; x++) {
-      const a = attrs[y * f.cols + x] ?? 7;
-      const isCursor = x === f.cursor[0] && y === f.cursor[1];
-      if (isCursor) {
-        flush();
-        html += `<span class="cur f${a & 0x0f} b${(a >> 4) & 0x07}">${esc(chars[x])}</span>`;
-        runAttr = -1;
-        continue;
-      }
-      if (a !== runAttr) {
-        flush();
-        runAttr = a;
-      }
-      run += chars[x];
-    }
-    flush();
-    rows.push(html);
-  }
-  mir.grid.innerHTML = rows.join("\n");
-}
+const BUTTON = { 0: 0, 2: 1, 1: 2 }; // browser order → left / right / middle
 
-// ── injection (tier 1, Phase 3) ─────────────────────────────────────────────
+let targets = []; // every configured machine
+let shown = []; // indices with a pane, in display order
+let focused = null; // the one index keystrokes can reach
+const panes = new Map(); // index → Pane
 
-let inputEnabled = false;
-
-const badge = document.getElementById("input-badge");
-const layoutWarn = document.getElementById("layout-warn");
-
-function setInput(enabled, reason) {
-  inputEnabled = enabled;
-  badge.dataset.on = String(enabled);
-  badge.textContent = enabled ? "input live" : `input off${reason ? ` — ${reason}` : ""}`;
-}
-
+/// Let go of held keys on **every** machine. Cheap, and the failure it prevents — a modifier stuck
+/// down on a root console — is the one worth being blunt about.
 const release = () => invoke("mirror_release_all").catch(() => {});
+
+class Pane {
+  constructor(index, target) {
+    this.index = index;
+    this.inputEnabled = false;
+    this.graphical = false;
+    // The desktop is kept twice: once clean, once with the cursor drawn on it. Without the clean
+    // copy there is nothing to paint back over the cursor's last position, and it leaves a trail.
+    this.desk = document.createElement("canvas");
+    this.deskCtx = this.desk.getContext("2d");
+    this.cursor = { x: 0, y: 0, visible: false };
+    this.cursorImg = null;
+    this.cursorHot = { x: 0, y: 0 };
+    this.lastCursorRect = null;
+    this.pendingMove = null;
+    this.aimedAt = { x: 0, y: 0 };
+    this.build(target);
+  }
+
+  build(target) {
+    const el = document.createElement("section");
+    el.className = "pane";
+    el.innerHTML = `
+      <header class="pane-head">
+        <span class="dot" data-state="idle"></span>
+        <span class="pane-name"></span>
+        <span class="badge input-badge" data-on="false">input off</span>
+        <span class="pane-detail"></span>
+        <span class="spacer"></span>
+        <span class="vtrow"><span class="vtlabel">VT</span></span>
+      </header>
+      <div class="pane-body">
+        <pre class="grid" tabindex="0" aria-label="Mirrored console"></pre>
+        <canvas class="screen" hidden tabindex="0" aria-label="Mirrored desktop"></canvas>
+      </div>`;
+    this.el = el;
+    this.dot = el.querySelector(".dot");
+    this.name = el.querySelector(".pane-name");
+    this.badge = el.querySelector(".input-badge");
+    this.detail = el.querySelector(".pane-detail");
+    this.vtrow = el.querySelector(".vtrow");
+    this.body = el.querySelector(".pane-body");
+    this.grid = el.querySelector(".grid");
+    this.screen = el.querySelector(".screen");
+    this.screenCtx = this.screen.getContext("2d");
+    this.name.textContent = target.name || target.addr;
+
+    // Switch console by ioctl, not by injecting Ctrl+Alt+Fn. Injecting the chord looks more
+    // authentic and is a trap: a console whose keyboard is disabled ignores the very chord that
+    // would take you off it (DECISIONS.md D13). These stay live even when input is off, which is
+    // exactly when you need them.
+    for (let vt = 1; vt <= 6; vt++) {
+      const b = document.createElement("button");
+      b.className = "vt";
+      b.textContent = String(vt);
+      b.addEventListener("click", async () => {
+        await invoke("mirror_switch_vt", { target: this.index, vt }).catch(() => {});
+        this.take();
+      });
+      this.vtrow.append(b);
+    }
+
+    // Clicking anywhere in a pane is how you choose which machine you are typing into.
+    el.addEventListener("mousedown", () => this.take());
+    this.wireMouse();
+  }
+
+  /// Take keyboard focus for this pane.
+  take() {
+    focusPane(this.index);
+    (this.graphical ? this.screen : this.grid).focus();
+  }
+
+  setStatus(state, detail) {
+    this.dot.dataset.state = state;
+    this.detail.textContent = detail || "";
+    if (state === "error" || state === "disconnected") this.setInput(false, "");
+  }
+
+  setInput(enabled, reason) {
+    this.inputEnabled = enabled;
+    this.badge.dataset.on = String(enabled);
+    this.badge.textContent = enabled ? "input live" : `input off${reason ? ` — ${reason}` : ""}`;
+  }
+
+  /// Paint a console frame. Cells are grouped into spans by attribute, so a row of plain text is
+  /// one span rather than eighty — the difference between a repaint you notice and one you don't.
+  paint(f) {
+    const attrs = bytes(f.attrs);
+    const rows = [];
+    for (let y = 0; y < f.text.length; y++) {
+      // Iterate code points, not UTF-16 units: one console cell is one code point, and indexing by
+      // unit would drift the moment anything outside the BMP appears.
+      const chars = Array.from(f.text[y]);
+      let html = "";
+      let run = "";
+      let runAttr = -1;
+      const flush = () => {
+        if (!run) return;
+        const fg = runAttr & 0x0f;
+        const bg = (runAttr >> 4) & 0x07;
+        html += `<span class="f${fg} b${bg}">${esc(run)}</span>`;
+        run = "";
+      };
+      for (let x = 0; x < chars.length; x++) {
+        const a = attrs[y * f.cols + x] ?? 7;
+        const isCursor = x === f.cursor[0] && y === f.cursor[1];
+        if (isCursor) {
+          flush();
+          html += `<span class="cur f${a & 0x0f} b${(a >> 4) & 0x07}">${esc(chars[x])}</span>`;
+          runAttr = -1;
+          continue;
+        }
+        if (a !== runAttr) {
+          flush();
+          runAttr = a;
+        }
+        run += chars[x];
+      }
+      flush();
+      rows.push(html);
+    }
+    this.grid.innerHTML = rows.join("\n");
+  }
+
+  /// This target mirrors pixels, not characters. The pane adapts rather than making you pick a
+  /// tab, because from where you sit both are just "the other machine's screen".
+  screenInfo(w, h) {
+    this.graphical = true;
+    this.screen.width = w;
+    this.screen.height = h;
+    this.desk.width = w;
+    this.desk.height = h;
+    this.screen.hidden = false;
+    this.grid.hidden = true;
+    this.vtrow.hidden = true; // a desktop has no VTs to switch between
+    this.fit();
+  }
+
+  /// Scale the canvas to the pane while preserving aspect, so a 1080p desktop stays legible in
+  /// half a window. The backing store stays at native resolution — we downscale for display only.
+  fit() {
+    if (this.screen.hidden || !this.screen.width) return;
+    const box = this.body.getBoundingClientRect();
+    const scale = Math.min(
+      Math.max(40, box.width - 12) / this.screen.width,
+      Math.max(40, box.height - 12) / this.screen.height,
+      1
+    );
+    this.screen.style.width = `${Math.floor(this.screen.width * scale)}px`;
+    this.screen.style.height = `${Math.floor(this.screen.height * scale)}px`;
+  }
+
+  raster(x, y, url) {
+    const img = new Image();
+    // Decoding happens off the main thread; drawing a stale tile is harmless because the next one
+    // for that region supersedes it.
+    img.onload = () => {
+      this.deskCtx.drawImage(img, x, y);
+      this.screenCtx.drawImage(img, x, y);
+      this.lastCursorRect = null; // that tile may have painted over the cursor
+      this.drawCursor();
+    };
+    img.src = url;
+  }
+
+  pointer(p) {
+    this.cursor = p;
+    this.drawCursor();
+  }
+
+  shape(url, hotX, hotY) {
+    const img = new Image();
+    img.onload = () => {
+      this.cursorImg = img;
+      this.cursorHot = { x: hotX, y: hotY };
+      this.drawCursor();
+    };
+    img.src = url;
+  }
+
+  /// Erase the cursor by repainting that rectangle from the clean copy, then draw it at its new
+  /// place. Two small blits per move rather than one full-screen repaint.
+  drawCursor() {
+    if (this.lastCursorRect) {
+      const r = this.lastCursorRect;
+      this.screenCtx.drawImage(this.desk, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+      this.lastCursorRect = null;
+    }
+    if (!this.cursor.visible || !this.cursorImg) return;
+    const x = this.cursor.x - this.cursorHot.x;
+    const y = this.cursor.y - this.cursorHot.y;
+    this.screenCtx.drawImage(this.cursorImg, x, y);
+    this.lastCursorRect = { x, y, w: this.cursorImg.width, h: this.cursorImg.height };
+  }
+
+  /// Canvas pixels → remote screen pixels. The canvas is displayed scaled to fit, so a click at
+  /// the visible position must be undone by that same scale before it means anything remotely.
+  toScreen(e) {
+    const r = this.screen.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * this.screen.width;
+    const y = ((e.clientY - r.top) / r.height) * this.screen.height;
+    return {
+      x: Math.max(0, Math.min(this.screen.width - 1, Math.round(x))),
+      y: Math.max(0, Math.min(this.screen.height - 1, Math.round(y))),
+    };
+  }
+
+  mouse(kind, opts = {}) {
+    if (!this.inputEnabled) return;
+    invoke("mirror_mouse", {
+      target: this.index,
+      kind,
+      x: opts.x ?? 0,
+      y: opts.y ?? 0,
+      button: opts.button ?? 0,
+      down: opts.down ?? false,
+      dx: opts.dx ?? 0,
+      dy: opts.dy ?? 0,
+    }).catch(() => {});
+  }
+
+  wireMouse() {
+    const s = this.screen;
+    // Coalesce motion to one message per animation frame. A mouse produces far more events than a
+    // remote desktop can usefully consume, and only the newest position matters.
+    s.addEventListener("mousemove", (e) => {
+      this.aimedAt = this.toScreen(e);
+      if (this.pendingMove) return;
+      this.pendingMove = requestAnimationFrame(() => {
+        this.pendingMove = null;
+        // Only the position is sent; the drawn cursor comes back from the agent, so what you see
+        // is where the pointer actually is rather than where we hoped it would go.
+        this.mouse("move", this.aimedAt);
+      });
+    });
+    s.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      this.take();
+      this.mouse("move", this.toScreen(e));
+      this.mouse("button", { button: BUTTON[e.button] ?? 0, down: true });
+    });
+    s.addEventListener("mouseup", (e) => {
+      e.preventDefault();
+      this.mouse("button", { button: BUTTON[e.button] ?? 0, down: false });
+    });
+    // Otherwise a right-click opens the *panel's* context menu instead of the remote machine's.
+    s.addEventListener("contextmenu", (e) => e.preventDefault());
+    s.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        this.mouse("scroll", { dx: Math.sign(-e.deltaX), dy: Math.sign(-e.deltaY) });
+      },
+      { passive: false }
+    );
+    // Leaving the canvas with a button held would strand it down on the other machine.
+    s.addEventListener("mouseleave", () => release());
+  }
+}
+
+// ── which pane owns the keyboard ────────────────────────────────────────────
+//
+// With one machine on screen this was a window-focus question (THREAT-MODEL R4). With two it is a
+// choice, so it has to be visible: the focused pane is outlined, the other is dimmed, and only the
+// focused one can receive a keystroke.
+
+function focusPane(i) {
+  if (focused === i) return;
+  release(); // never carry a held key from one machine to another
+  focused = i;
+  for (const [j, p] of panes) p.el.classList.toggle("focused", j === i);
+}
 
 /// Keys are sent by *physical position* (`event.code`), never by character (`event.key`).
 /// The remote console's keymap decides what appears — see DECISIONS.md D2. Sending the character
 /// would mean translating twice and getting it wrong once.
 function onKey(e, down) {
-  if (view !== "mirror" || !inputEnabled) return;
+  if (view !== "mirror" || focused === null) return;
   if (!mir.form.hidden) return; // the pairing form owns the keyboard while it is up
   if (e.target && e.target.tagName === "INPUT") return;
+  const pane = panes.get(focused);
+  if (!pane || !pane.inputEnabled) return;
   e.preventDefault();
-  invoke("mirror_key", { code: e.code, down }).catch(() => {});
+  invoke("mirror_key", { target: focused, code: e.code, down }).catch(() => {});
 }
 
 document.addEventListener("keydown", (e) => onKey(e, true));
 document.addEventListener("keyup", (e) => onKey(e, false));
 
-// Anything that means "you are no longer typing here" must let go of held keys. A modifier stuck
-// down on a root console is the failure this guards against.
+// Anything that means "you are no longer typing here" must let go of held keys.
 window.addEventListener("blur", release);
 document.addEventListener("visibilitychange", () => document.hidden && release());
-
-// Switch console by ioctl, not by injecting Ctrl+Alt+Fn.
-//
-// Injecting the chord looks more "authentic" and is a trap: a console whose keyboard is disabled
-// ignores the very chord that would take you off it, so you end up somewhere you cannot leave
-// (DECISIONS.md D13). VT_ACTIVATE works regardless of keyboard mode — and it works even when the
-// input badge says input is off, which is exactly when you need it most.
-document.querySelectorAll("button.vt").forEach((b) => {
-  b.addEventListener("click", async () => {
-    await invoke("mirror_switch_vt", { vt: Number(b.dataset.vt) }).catch(() => {});
-    mir.grid.focus();
-  });
-});
 
 /// Detect whether the Windows layout matches the console's keymap.
 ///
@@ -222,211 +447,136 @@ async function checkLayout() {
   }
 }
 
-listen("mirror:input", (e) => setInput(e.payload.state === "enabled", e.payload.detail));
+// ── event routing ───────────────────────────────────────────────────────────
 
-// ── graphical desktops (Windows agent) ──────────────────────────────────────
-//
-// A console agent sends a character grid; a Windows agent sends compressed rectangles. The mirror
-// pane adapts to whichever it is talking to rather than making you pick a tab, because from where
-// you sit both are just "the other machine's screen".
+const to = (payload) => panes.get(payload.target);
 
-const screenEl = document.getElementById("screen");
-const screenCtx = screenEl.getContext("2d");
+listen("mirror:frame", (e) => to(e.payload)?.paint(e.payload));
+listen("mirror:input", (e) => to(e.payload)?.setInput(e.payload.state === "enabled", e.payload.detail));
+listen("mirror:screeninfo", (e) => to(e.payload)?.screenInfo(e.payload.w, e.payload.h));
+listen("mirror:raster", (e) => to(e.payload)?.raster(e.payload.x, e.payload.y, e.payload.url));
+listen("mirror:pointer", (e) => to(e.payload)?.pointer(e.payload));
+listen("mirror:pointershape", (e) => to(e.payload)?.shape(e.payload.url, e.payload.hotX, e.payload.hotY));
 
-listen("mirror:screeninfo", (e) => {
-  const { w, h } = e.payload;
-  screenEl.width = w;
-  screenEl.height = h;
-  desk.width = w;
-  desk.height = h;
-  screenEl.hidden = false;
-  mir.grid.hidden = true;
-  fitScreen();
-});
-
-/// Scale the canvas to the pane while preserving aspect, so a 1080p desktop is legible in a small
-/// window. The backing store stays at native resolution — we downscale for display only.
-function fitScreen() {
-  if (screenEl.hidden || !screenEl.width) return;
-  const box = mir.pane.getBoundingClientRect();
-  const avail = Math.max(120, box.height - 40);
-  const scale = Math.min((box.width - 16) / screenEl.width, avail / screenEl.height, 1);
-  screenEl.style.width = `${Math.floor(screenEl.width * scale)}px`;
-  screenEl.style.height = `${Math.floor(screenEl.height * scale)}px`;
-}
-new ResizeObserver(fitScreen).observe(mir.pane);
-
-// The desktop is kept twice: once clean, once with the cursor drawn on it. Without the clean copy
-// there is nothing to paint back over the cursor's last position, and it leaves a trail.
-const desk = document.createElement("canvas");
-const deskCtx = desk.getContext("2d");
-
-listen("mirror:raster", (e) => {
-  const { x, y, url } = e.payload;
-  const img = new Image();
-  // Decoding happens off the main thread; drawing a stale tile is harmless because the next one
-  // for that region supersedes it.
-  img.onload = () => {
-    deskCtx.drawImage(img, x, y);
-    screenCtx.drawImage(img, x, y);
-    lastCursorRect = null; // that tile may have painted over the cursor
-    drawCursor();
-  };
-  img.src = url;
-});
-
-// ── pointer ─────────────────────────────────────────────────────────────────
-//
-// Desktop Duplication excludes the pointer from captured frames — Windows composites the cursor in
-// hardware — so it arrives separately: a position on every change, a shape only when it changes.
-// The viewer therefore draws the *real* remote cursor, which means it follows moves the remote
-// machine makes itself, not just ours.
-
-let cursor = { x: 0, y: 0, visible: false };
-let cursorImg = null;
-let cursorHot = { x: 0, y: 0 };
-let lastCursorRect = null;
-
-/// Erase the cursor by repainting that rectangle from the clean copy, then draw it at its new
-/// place. Two small blits per move rather than one full-screen repaint.
-function drawCursor() {
-  if (lastCursorRect) {
-    const r = lastCursorRect;
-    screenCtx.drawImage(desk, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
-    lastCursorRect = null;
-  }
-  if (!cursor.visible || !cursorImg) return;
-  const x = cursor.x - cursorHot.x;
-  const y = cursor.y - cursorHot.y;
-  screenCtx.drawImage(cursorImg, x, y);
-  lastCursorRect = { x, y, w: cursorImg.width, h: cursorImg.height };
-}
-
-listen("mirror:pointer", (e) => {
-  cursor = e.payload;
-  drawCursor();
-});
-
-listen("mirror:pointershape", (e) => {
-  const { url, hotX, hotY } = e.payload;
-  const img = new Image();
-  img.onload = () => {
-    cursorImg = img;
-    cursorHot = { x: hotX, y: hotY };
-    drawCursor();
-  };
-  img.src = url;
-});
-
-/// Canvas pixels → remote screen pixels. The canvas is displayed scaled to fit, so a click at the
-/// visible position must be undone by that same scale before it means anything remotely.
-function toScreen(e) {
-  const r = screenEl.getBoundingClientRect();
-  const x = ((e.clientX - r.left) / r.width) * screenEl.width;
-  const y = ((e.clientY - r.top) / r.height) * screenEl.height;
-  return {
-    x: Math.max(0, Math.min(screenEl.width - 1, Math.round(x))),
-    y: Math.max(0, Math.min(screenEl.height - 1, Math.round(y))),
-  };
-}
-
-function sendMouse(kind, opts = {}) {
-  if (!inputEnabled) return;
-  invoke("mirror_mouse", {
-    kind,
-    x: opts.x ?? 0,
-    y: opts.y ?? 0,
-    button: opts.button ?? 0,
-    down: opts.down ?? false,
-    dx: opts.dx ?? 0,
-    dy: opts.dy ?? 0,
-  }).catch(() => {});
-}
-
-// Coalesce motion to one message per animation frame. A mouse can produce far more events than a
-// remote desktop can usefully consume, and only the newest position matters.
-let pendingMove = null;
-let aimedAt = { x: 0, y: 0 };
-screenEl.addEventListener("mousemove", (e) => {
-  aimedAt = toScreen(e);
-  if (pendingMove) return;
-  pendingMove = requestAnimationFrame(() => {
-    pendingMove = null;
-    // Only the position is sent; the drawn cursor comes back from the agent, so what you see is
-    // where the pointer actually is rather than where we hoped it would go.
-    sendMouse("move", aimedAt);
-  });
-});
-
-const BUTTON = { 0: 0, 2: 1, 1: 2 }; // browser order → left / right / middle
-
-screenEl.addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  screenEl.focus();
-  const p = toScreen(e);
-  sendMouse("move", p);
-  sendMouse("button", { button: BUTTON[e.button] ?? 0, down: true });
-});
-screenEl.addEventListener("mouseup", (e) => {
-  e.preventDefault();
-  sendMouse("button", { button: BUTTON[e.button] ?? 0, down: false });
-});
-// Otherwise a right-click opens the *panel's* context menu instead of the remote machine's.
-screenEl.addEventListener("contextmenu", (e) => e.preventDefault());
-screenEl.addEventListener(
-  "wheel",
-  (e) => {
-    e.preventDefault();
-    sendMouse("scroll", { dx: Math.sign(-e.deltaX), dy: Math.sign(-e.deltaY) });
-  },
-  { passive: false }
-);
-// Leaving the canvas with a button held would strand it down on the other machine.
-screenEl.addEventListener("mouseleave", () => release());
-
-listen("mirror:frame", (e) => paint(e.payload));
 listen("mirror:status", (e) => {
-  const { state, detail } = e.payload;
-  if (view === "mirror") setStatus(state, detail);
-  if (state === "error" || state === "disconnected") {
-    setInput(false, "");
-    mir.grid.textContent = `${state}: ${detail}`;
-    // An unenrolled certificate is a pairing problem, not a network one — offer the form again
-    // rather than leaving the user staring at an error.
-    if (/not enrolled|pairing/i.test(detail)) {
-      mirrorStarted = false;
-      mir.form.hidden = false;
-      mir.addr.focus();
+  const { target, state, detail } = e.payload;
+  const pane = panes.get(target);
+  pane?.setStatus(state, detail);
+  // The window's own light follows the pane you are typing into; the others speak for themselves
+  // in their headers.
+  if (view === "mirror" && target === focused) setStatus(state, detail);
+  // An unenrolled certificate is a pairing problem, not a network one — offer the form again
+  // rather than leaving the user staring at an error.
+  if ((state === "error" || state === "disconnected") && /not enrolled|pairing/i.test(detail)) {
+    openPairing(targets[target]);
+  }
+});
+
+// ── layout ──────────────────────────────────────────────────────────────────
+
+/// Rebuild the panes so they match `shown`, keeping the ones that are already up.
+///
+/// Reusing a live pane matters: recreating it would throw away the desktop it has painted and the
+/// canvas would go black until the agent's next full frame.
+function syncPanes() {
+  for (const [i, p] of [...panes]) {
+    if (!shown.includes(i)) {
+      p.el.remove();
+      panes.delete(i);
     }
   }
-});
-
-const targetSel = document.getElementById("target");
-
-async function fillTargetSelector() {
-  const cfg = await invoke("get_config");
-  const list = cfg.agents || [];
-  targetSel.replaceChildren(
-    ...list.map((t, i) => {
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = t.name || t.addr;
-      return o;
-    })
-  );
-  targetSel.value = String(cfg.active_agent || 0);
-  targetSel.hidden = list.length < 2; // no point offering a choice of one
+  for (const i of shown) {
+    if (!panes.has(i)) panes.set(i, new Pane(i, targets[i] || { name: `#${i}`, addr: "" }));
+  }
+  // Append in `shown` order so the chips and the panes read left to right the same way.
+  mir.panes.replaceChildren(...shown.map((i) => panes.get(i).el));
+  if (focused === null || !shown.includes(focused)) {
+    focused = shown[0] ?? null;
+  }
+  for (const [j, p] of panes) p.el.classList.toggle("focused", j === focused);
+  layoutPanes();
 }
 
-targetSel.addEventListener("change", async () => {
-  await invoke("set_active_agent", { index: Number(targetSel.value) }).catch(() => {});
-  // A different machine is a different console: drop what we hold and start clean.
-  release();
-  mir.grid.textContent = "";
-  setInput(false, "");
-  mirrorStarted = false;
-  await showView("mirror");
-});
+/// Side by side normally, stacked when the window is too narrow for two to be worth looking at.
+function layoutPanes() {
+  const box = mir.panes.getBoundingClientRect();
+  mir.panes.classList.toggle("stack", shown.length > 1 && box.width < box.height * 1.3);
+  for (const p of panes.values()) p.fit();
+}
+new ResizeObserver(layoutPanes).observe(mir.pane);
+
+// ── choosing machines ───────────────────────────────────────────────────────
+
+function renderChips() {
+  mir.chips.replaceChildren(
+    ...targets.map((t, i) => {
+      const b = document.createElement("button");
+      b.className = "chip";
+      b.setAttribute("aria-pressed", String(shown.includes(i)));
+      b.title = shown.includes(i)
+        ? `${t.addr} — click to put away`
+        : `${t.addr} — click to show (two at a time)`;
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.dataset.state = panes.get(i)?.dot.dataset.state || "idle";
+      b.append(dot, document.createTextNode(t.name || t.addr));
+      b.addEventListener("click", () => toggleTarget(i));
+      return b;
+    })
+  );
+}
+
+/// Click a chip to show that machine; click it again to put it away. Two panes is the ceiling, and
+/// asking for a third replaces the one you are *not* typing into — the focused pane is presumably
+/// the one you meant to keep.
+async function toggleTarget(i) {
+  let next = shown.slice();
+  if (next.includes(i)) {
+    if (next.length === 1) return; // never leave the mirror empty
+    next = next.filter((x) => x !== i);
+  } else if (next.length < 2) {
+    next.push(i);
+  } else {
+    const drop = next.find((x) => x !== focused) ?? next[0];
+    next = next.map((x) => (x === drop ? i : x));
+  }
+  await applyShown(next);
+}
+
+async function applyShown(next) {
+  shown = next;
+  syncPanes();
+  renderChips();
+  try {
+    // Saving and connecting are one call: a layout that persists but doesn't take effect is how
+    // you end up with a pane that never fills in.
+    await invoke("set_visible", { indices: shown });
+  } catch (err) {
+    panes.get(shown[0])?.setStatus("error", String(err));
+  }
+}
+
+/// Load the configured machines and put the saved layout back on screen.
+async function refreshTargets() {
+  const cfg = await invoke("get_config");
+  targets = cfg.agents || [];
+  shown = (cfg.visible || []).filter((i) => i < targets.length);
+  if (!shown.length && targets.length) shown = [0];
+  syncPanes();
+  renderChips();
+  return cfg;
+}
+
+function openPairing(target) {
+  mir.addr.value = target?.addr || "";
+  mir.fp.value = target?.fingerprint || "";
+  mir.token.value = "";
+  mir.error.textContent = "";
+  mir.form.hidden = false;
+  mir.addr.focus();
+}
+
+mir.pairNew.addEventListener("click", () => openPairing(null));
 
 mir.form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -436,19 +586,22 @@ mir.form.addEventListener("submit", async (e) => {
     const addr = mir.addr.value.trim();
     const fingerprint = mir.fp.value.trim();
     cfg.agents = cfg.agents || [];
-    const existing = cfg.agents.findIndex((t) => t.addr === addr);
-    if (existing >= 0) {
-      cfg.agents[existing].fingerprint = fingerprint;
-      cfg.active_agent = existing;
+    let index = cfg.agents.findIndex((t) => t.addr === addr);
+    if (index >= 0) {
+      cfg.agents[index].fingerprint = fingerprint;
     } else {
       cfg.agents.push({ name: addr, addr, fingerprint });
-      cfg.active_agent = cfg.agents.length - 1;
+      index = cfg.agents.length - 1;
     }
+    // A machine you just paired is one you want to look at.
+    cfg.visible = [index, ...(cfg.visible || []).filter((i) => i !== index)].slice(0, 2);
     await invoke("save_config", { config: cfg });
-    await invoke("set_agent_token", { token: mir.token.value });
+    // Tokens are keyed by address, so pairing a second machine leaves the first one's alone.
+    await invoke("set_agent_token", { addr, token: mir.token.value });
     mir.token.value = "";
     mir.form.hidden = true;
-    await invoke("mirror_connect");
+    await refreshTargets();
+    await invoke("mirror_sync");
   } catch (err) {
     mir.error.textContent = String(err);
   }
@@ -581,9 +734,11 @@ set.save.addEventListener("click", async () => {
     cfg.user = set.user.value.trim();
     cfg.fingerprint = set.fp.value.trim();
     cfg.agents = readTargets();
-    if (cfg.active_agent >= cfg.agents.length) cfg.active_agent = 0;
+    // Editing the list can delete the machine a pane is showing; drop any layout that no longer
+    // points at anything rather than leaving a pane that can never connect.
+    cfg.visible = (cfg.visible || []).filter((i) => i < cfg.agents.length);
     await invoke("save_config", { config: cfg });
-    await fillTargetSelector();
+    await refreshTargets();
     set.msg.textContent = "saved — reconnect the tabs to use the new settings";
   } catch (err) {
     set.msg.textContent = String(err);
@@ -602,7 +757,6 @@ set.forget.addEventListener("click", async () => {
 // ── views ───────────────────────────────────────────────────────────────────
 
 let view = "shell";
-let mirrorStarted = false;
 
 async function showView(next) {
   view = next;
@@ -627,31 +781,22 @@ async function showView(next) {
   }
 
   checkLayout();
-  await fillTargetSelector();
-  if (mirrorStarted) {
-    mir.grid.focus();
-    return;
-  }
-  mirrorStarted = true;
+  await refreshTargets();
 
   // Pairing is decided by whether we are configured, not by whether a token is stored: the token
   // is deleted once spent, so "no token" is the normal state of a paired panel.
-  const cfg = await invoke("get_config");
-  const active = (cfg.agents || [])[cfg.active_agent || 0];
-  if (!active || !active.addr || !active.fingerprint) {
-    mir.addr.value = active ? active.addr : "";
-    mir.fp.value = active ? active.fingerprint : "";
-    mir.form.hidden = false;
-    mir.addr.focus();
-    mirrorStarted = false;
+  const unpaired = shown.map((i) => targets[i]).find((t) => !t || !t.addr || !t.fingerprint);
+  if (!targets.length || unpaired) {
+    openPairing(unpaired || null);
     return;
   }
+  // `mirror_sync` is idempotent — it connects what is missing and leaves what is already up — so
+  // re-entering the tab costs nothing and there is no "have we started yet" flag to get wrong.
   try {
-    await invoke("mirror_connect");
-    mir.grid.focus();
+    await invoke("mirror_sync");
+    panes.get(focused)?.take();
   } catch (err) {
-    mirrorStarted = false;
-    mir.grid.textContent = String(err);
+    panes.get(focused)?.setStatus("error", String(err));
   }
 }
 
@@ -666,7 +811,15 @@ el.bar.addEventListener("mousedown", (e) => {
   getCurrentWindow().startDragging();
 });
 el.hide.addEventListener("click", () => invoke("hide_panel"));
-el.reconnect.addEventListener("click", () => start());
+// Reconnect what you are looking at, not always the shell.
+el.reconnect.addEventListener("click", () => {
+  if (view === "mirror") {
+    for (const i of shown) panes.get(i)?.setStatus("connecting", "");
+    invoke("mirror_sync").catch(() => {});
+    return;
+  }
+  start();
+});
 
 // ── startup ─────────────────────────────────────────────────────────────────
 

@@ -84,6 +84,13 @@ session; a logon task reaches the same place directly.
 > Run `--install` from your own terminal. Task and registry changes made from a sandboxed shell can
 > be virtualised away and silently fail to take effect.
 
+## Two machines at once
+
+Every configured machine is a chip in the mirror toolbar. Click one to put it on screen, click it
+again to put it away; two can be up side by side. Keystrokes only ever reach the **focused** pane —
+outlined in green, with the other dimmed — and moving focus releases everything held on every
+machine first. Asking for a third pane replaces the one you are not typing into.
+
 ## Clipboard
 
 Between Windows machines the clipboard follows you, both ways, automatically — copy on one, paste

@@ -102,11 +102,21 @@ body { display: flex; flex-direction: column; }
 .target .fp { grid-column: 1 / 3; }
 .target button { padding: 4px 6px; color: var(--bad); }
 
-#target {
-  background: #0b0f14; border: 1px solid var(--edge); border-radius: 4px;
-  color: var(--ink); font: inherit; font-size: 11px; padding: 2px 4px;
+#chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip {
+  background: #21262d; border: 1px solid var(--edge); border-radius: 999px;
+  color: var(--dim); font: inherit; font-size: 11px; padding: 2px 10px; cursor: pointer;
+  display: flex; align-items: center; gap: 5px;
 }
-#target:focus { outline: none; border-color: #388bfd; }
+.chip:hover { background: #30363d; color: var(--ink); }
+.chip[aria-pressed="true"] { color: var(--ink); border-color: #388bfd; background: #1c2a3a; }
+.chip .dot { width: 6px; height: 6px; }
+
+#pair-new {
+  background: transparent; border: 1px solid var(--edge); border-radius: 999px;
+  color: var(--dim); font: inherit; font-size: 11px; padding: 2px 10px; cursor: pointer;
+}
+#pair-new:hover { color: var(--ink); background: #21262d; }
 
 #term, #mirror {
   flex: 1;
@@ -133,12 +143,37 @@ button.vt {
 }
 button.vt:hover { background: #30363d; color: var(--ink); }
 
-/* When the grid holds focus, keys are going to the other machine. Say so unmistakably —
-   THREAT-MODEL R4: with an overlay, "which machine am I typing into" is a focus question. */
-#grid:focus { outline: 2px solid var(--ok); outline-offset: 2px; }
+/* Panes. Side by side when the window is wide enough for two to be legible, stacked otherwise —
+   a 1080p desktop squeezed into half of a narrow window is a thumbnail, not a mirror. */
+#panes { flex: 1; min-height: 0; display: flex; gap: 8px; }
+#panes.stack { flex-direction: column; }
+.pane {
+  flex: 1 1 0; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--edge); border-radius: 6px; overflow: hidden;
+  background: #0b0f14;
+}
+
+/* Which machine am I typing into? With two on screen this stops being a detail and becomes the
+   safety property — THREAT-MODEL R4/R8. The focused pane is outlined in the same green as the
+   input-live badge, and it is the only pane keystrokes can reach. */
+.pane.focused { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
+.pane:not(.focused) .pane-body { opacity: 0.72; }
+
+.pane-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; flex: 0 0 auto;
+  background: var(--bar); border-bottom: 1px solid var(--edge);
+  font-size: 11px;
+}
+.pane-name { font-weight: 600; }
+.pane-detail { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 6px; }
+.vtrow { display: flex; align-items: center; gap: 3px; }
+.vtrow[hidden] { display: none; }
 
 /* The mirror is a fixed grid of cells, so it is laid out as one, not reflowed as text. */
-#grid {
+.grid {
   margin: 0;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 13px;
@@ -146,11 +181,11 @@ button.vt:hover { background: #30363d; color: var(--ink); }
   white-space: pre;
   color: #c9d1d9;
 }
-#grid .cur { outline: 1px solid #58a6ff; background: rgba(88, 166, 255, 0.25); }
+.grid:focus, .screen:focus { outline: none; } /* the pane border carries this, not the element */
+.grid .cur { outline: 1px solid #58a6ff; background: rgba(88, 166, 255, 0.25); }
 
-#screen { display: block; image-rendering: auto; background: #000; }
-#screen[hidden] { display: none; }
-#screen:focus { outline: 2px solid var(--ok); outline-offset: 2px; }
+.screen { display: block; image-rendering: auto; background: #000; }
+.screen[hidden] { display: none; }
 
 /* VGA's sixteen, which is what a text console actually speaks. */
 .f0{color:#000}.f1{color:#0000aa}.f2{color:#00aa00}.f3{color:#00aaaa}

@@ -51,16 +51,22 @@ pub struct Config {
     /// config is loaded, so upgrading doesn't lose a pairing.
     #[serde(default)]
     pub agents: Vec<AgentTarget>,
+    /// Kept only so older configs still parse and can seed `visible`; `visible` is the truth.
     #[serde(default)]
     pub active_agent: usize,
+    /// Which targets are on screen right now, in order — one pane each, at most two. This is the
+    /// single source of truth for what the mirror shows; having both this and an "active" index
+    /// would be two facts that can disagree.
+    #[serde(default)]
+    pub visible: Vec<usize>,
 }
 
-impl Config {
-    fn active(&self) -> Option<&AgentTarget> {
-        self.agents.get(self.active_agent)
-    }
+/// Two panes fit; a third turns a glance into a search. The limit is ergonomic, not technical —
+/// nothing below cares how many sessions are live.
+const MAX_PANES: usize = 2;
 
-    /// Fold a pre-multi-target config into the list.
+impl Config {
+    /// Fold a pre-multi-target config into the list, then a pre-split config into `visible`.
     fn migrate(&mut self) {
         if self.agents.is_empty() && !self.agent_addr.is_empty() {
             self.agents.push(AgentTarget {
@@ -71,6 +77,21 @@ impl Config {
         }
         if self.active_agent >= self.agents.len() {
             self.active_agent = 0;
+        }
+        if self.visible.is_empty() && !self.agents.is_empty() {
+            self.visible = vec![self.active_agent];
+        }
+        self.clamp_visible();
+    }
+
+    /// A saved layout must never outlive the targets it names, or the panel opens onto a pane that
+    /// can never connect and gives no hint why.
+    fn clamp_visible(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.visible.retain(|i| *i < self.agents.len() && seen.insert(*i));
+        self.visible.truncate(MAX_PANES);
+        if self.visible.is_empty() && !self.agents.is_empty() {
+            self.visible = vec![0];
         }
     }
 }
@@ -90,6 +111,7 @@ impl Default for Config {
             agent_fingerprint: String::new(),
             agents: Vec::new(),
             active_agent: 0,
+            visible: Vec::new(),
         }
     }
 }
@@ -101,23 +123,56 @@ enum Out {
     Resize { cols: u16, rows: u16 },
 }
 
+/// Sessions are per target index, because more than one can be live at a time — that is what the
+/// split view *is*. Both maps are keyed the same way and mean different things: `generation` is
+/// the authority on "is this task still current", and survives the gaps between reconnect attempts
+/// when there is no sender to hold.
 #[derive(Default)]
 struct AppState {
     config: Mutex<Config>,
     tx: Mutex<Option<mpsc::UnboundedSender<Out>>>,
-    /// Bumped on every mirror connect; a task whose generation is stale exits quietly instead of
-    /// two connections fighting over the same view.
-    mirror_generation: Mutex<u64>,
-    /// Outbound key events toward the agent.
-    mirror_keys: Mutex<Option<tokio::sync::mpsc::Sender<protocol::ClientMsg>>>,
+    /// Bumped whenever a target is (re)connected or closed; a task whose generation is stale exits
+    /// quietly instead of two connections fighting over the same pane.
+    mirror_generation: Mutex<std::collections::HashMap<usize, u64>>,
+    /// Outbound events toward each connected agent.
+    mirror_keys: Mutex<std::collections::HashMap<usize, tokio::sync::mpsc::Sender<protocol::ClientMsg>>>,
     /// Exactly which accelerator is live, so a rebind releases that one and no other.
     registered_hotkey: Mutex<Option<String>>,
-    /// The last clipboard value we applied *from* the remote machine.
+    /// The last clipboard value we applied *from* a remote machine.
     clipboard_echo: Mutex<Option<String>>,
+}
+
+impl AppState {
+    /// Send to one agent, dropping the message if that target isn't connected. A keystroke arriving
+    /// a moment after a link dropped is not an error worth surfacing.
+    fn send_to(&self, target: usize, msg: protocol::ClientMsg) {
+        if let Some(tx) = self.mirror_keys.lock().unwrap().get(&target) {
+            let _ = tx.try_send(msg);
+        }
+    }
+
+    /// Send to every connected agent except one. Used by the clipboard, where `except` is whichever
+    /// machine the text came from.
+    fn broadcast(&self, except: Option<usize>, msg: protocol::ClientMsg) {
+        for (i, tx) in self.mirror_keys.lock().unwrap().iter() {
+            if Some(*i) != except {
+                let _ = tx.try_send(msg.clone());
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
 struct Status {
+    state: &'static str,
+    detail: String,
+}
+
+/// Same, but tagged with the pane it belongs to. Every mirror event carries this now: with two
+/// machines on screen, an untagged frame is a frame painted into the wrong pane.
+#[derive(Serialize, Clone)]
+struct MirrorStatus {
+    target: usize,
     state: &'static str,
     detail: String,
 }
@@ -283,39 +338,45 @@ fn resize(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<(), String
 
 // ── mirror (tier 1) ─────────────────────────────────────────────────────────────────────────────
 
-/// Tokens are keyed by address, so each target keeps its own pairing secret.
-fn agent_keyring(cfg: &Config) -> Result<keyring::Entry, String> {
-    let addr = cfg.active().map(|a| a.addr.as_str()).unwrap_or("");
+/// Tokens are keyed by address, so each target keeps its own pairing secret — and so a token can be
+/// stored for a machine that isn't the one currently on screen.
+fn agent_keyring(addr: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, &format!("agent@{addr}")).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn has_agent_token(state: State<'_, AppState>) -> bool {
-    let cfg = state.config.lock().unwrap().clone();
-    if cfg.active().is_none_or(|a| a.addr.is_empty()) {
+fn has_agent_token(state: State<'_, AppState>, addr: String) -> bool {
+    if addr.is_empty() {
         return false;
     }
-    agent_keyring(&cfg).map(|e| e.get_password().is_ok()).unwrap_or(false)
+    let _ = state;
+    agent_keyring(&addr).map(|e| e.get_password().is_ok()).unwrap_or(false)
 }
 
 #[tauri::command]
-fn set_agent_token(state: State<'_, AppState>, token: String) -> Result<(), String> {
-    let cfg = state.config.lock().unwrap().clone();
-    agent_keyring(&cfg)?.set_password(&token).map_err(|e| e.to_string())
+fn set_agent_token(state: State<'_, AppState>, addr: String, token: String) -> Result<(), String> {
+    let _ = state;
+    agent_keyring(&addr)?.set_password(&token).map_err(|e| e.to_string())
 }
 
-/// Switch which machine the mirror shows. The caller reconnects afterwards.
+/// Choose which targets are on screen — one index for a single pane, two for a split.
+///
+/// Saving and reconciling are one step on purpose: a layout that persists but doesn't take effect
+/// (or the reverse) is the kind of split-brain that shows up as "it forgot my second pane".
 #[tauri::command]
-fn set_active_agent(app: AppHandle, state: State<'_, AppState>, index: usize) -> Result<(), String> {
-    let mut cfg = state.config.lock().unwrap().clone();
-    if index >= cfg.agents.len() {
-        return Err("no such target".into());
+async fn set_visible(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    indices: Vec<usize>,
+) -> Result<(), String> {
+    {
+        let mut cfg = state.config.lock().unwrap();
+        cfg.visible = indices;
+        cfg.clamp_visible();
+        let json = serde_json::to_string_pretty(&*cfg).map_err(|e| e.to_string())?;
+        std::fs::write(config_path(&app), json).map_err(|e| e.to_string())?;
     }
-    cfg.active_agent = index;
-    let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-    std::fs::write(config_path(&app), json).map_err(|e| e.to_string())?;
-    *state.config.lock().unwrap() = cfg;
-    Ok(())
+    mirror_sync(app.clone(), app.state::<AppState>()).await
 }
 
 /// What the webview needs to paint one console frame.
@@ -325,6 +386,7 @@ fn set_active_agent(app: AppHandle, state: State<'_, AppState>, index: usize) ->
 /// BMP. Per-row strings let the frontend iterate code points and stay correct.
 #[derive(Serialize, Clone)]
 struct FramePayload {
+    target: usize,
     vt: u8,
     cols: u16,
     rows: u16,
@@ -334,10 +396,11 @@ struct FramePayload {
     attrs: String,
 }
 
-impl From<&protocol::Screen> for FramePayload {
-    fn from(s: &protocol::Screen) -> Self {
+impl FramePayload {
+    fn of(target: usize, s: &protocol::Screen) -> Self {
         let w = s.cols as usize;
         Self {
+            target,
             vt: s.vt,
             cols: s.cols,
             rows: s.rows,
@@ -348,33 +411,37 @@ impl From<&protocol::Screen> for FramePayload {
     }
 }
 
-/// Send a key event to the agent. Silently ignored when not connected — a keystroke arriving a
-/// moment after the link dropped is not an error worth surfacing.
+/// Send a key event to one pane's agent. Silently ignored when not connected — a keystroke arriving
+/// a moment after the link dropped is not an error worth surfacing.
 #[tauri::command]
-fn mirror_key(state: State<'_, AppState>, code: String, down: bool) -> Result<(), String> {
+fn mirror_key(
+    state: State<'_, AppState>,
+    target: usize,
+    code: String,
+    down: bool,
+) -> Result<(), String> {
     let Some(evdev) = protocol::keymap::evdev_for_code(&code) else {
         return Ok(()); // a key we deliberately don't relay
     };
-    let keys = state.mirror_keys.lock().unwrap();
-    if let Some(tx) = keys.as_ref() {
-        let _ = tx.try_send(protocol::ClientMsg::Key { code: evdev, down });
-    }
+    state.send_to(target, protocol::ClientMsg::Key { code: evdev, down });
     Ok(())
 }
 
-/// Let go of everything. Called on focus loss, tab change and window hide — see THREAT-MODEL R4:
-/// with a panel overlay, "which machine am I typing into" becomes a window-focus question.
+/// Let go of everything, on **every** connected machine.
+///
+/// Called on focus loss, tab change, window hide, and whenever focus moves from one pane to
+/// another. Releasing all of them rather than just the pane you left is deliberate: the cost is one
+/// message to an agent holding nothing, and the failure it prevents — a modifier stuck down on a
+/// root console — is the one THREAT-MODEL R4 cares about most.
 #[tauri::command]
 fn mirror_release_all(state: State<'_, AppState>) {
-    let keys = state.mirror_keys.lock().unwrap();
-    if let Some(tx) = keys.as_ref() {
-        let _ = tx.try_send(protocol::ClientMsg::ReleaseAll);
-    }
+    state.broadcast(None, protocol::ClientMsg::ReleaseAll);
 }
 
 #[tauri::command]
 fn mirror_mouse(
     state: State<'_, AppState>,
+    target: usize,
     kind: String,
     x: u16,
     y: u16,
@@ -389,12 +456,9 @@ fn mirror_mouse(
         "scroll" => protocol::ClientMsg::MouseScroll { dx, dy },
         _ => return Ok(()),
     };
-    let keys = state.mirror_keys.lock().unwrap();
-    if let Some(tx) = keys.as_ref() {
-        // Motion is dropped rather than queued when the link is saturated: a stale pointer position
-        // is worthless, and the next one is already on its way.
-        let _ = tx.try_send(msg);
-    }
+    // Motion is dropped rather than queued when the link is saturated: a stale pointer position is
+    // worthless, and the next one is already on its way.
+    state.send_to(target, msg);
     Ok(())
 }
 
@@ -403,16 +467,64 @@ fn mirror_mouse(
 /// A console with its keyboard disabled ignores the chord that would take you off it, so
 /// injection-based switching can leave you somewhere you cannot leave (DECISIONS.md D13).
 #[tauri::command]
-fn mirror_switch_vt(state: State<'_, AppState>, vt: u8) -> Result<(), String> {
+fn mirror_switch_vt(state: State<'_, AppState>, target: usize, vt: u8) -> Result<(), String> {
     let keys = state.mirror_keys.lock().unwrap();
-    let tx = keys.as_ref().ok_or("not connected")?;
+    let tx = keys.get(&target).ok_or("not connected")?;
     tx.try_send(protocol::ClientMsg::SwitchVt { vt }).map_err(|_| "not connected".to_string())
 }
 
+/// Make the live sessions match `config.visible`: connect what should be on screen, drop what
+/// should not.
+///
+/// One reconciling entry point rather than connect/disconnect pairs at every call site. The panel
+/// calls this on opening the mirror, on changing the layout, and on the reconnect button, and each
+/// time the answer is the same: whatever is visible should be connected, and nothing else.
 #[tauri::command]
-async fn mirror_connect(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+async fn mirror_sync(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let cfg = state.config.lock().unwrap().clone();
-    let target = cfg.active().ok_or("no mirror target configured")?.clone();
+
+    let live: Vec<usize> = state.mirror_keys.lock().unwrap().keys().copied().collect();
+    for i in live {
+        if !cfg.visible.contains(&i) {
+            disconnect_target(&app, i);
+        }
+    }
+
+    let mut first_error = None;
+    for &i in &cfg.visible {
+        let already = state.mirror_generation.lock().unwrap().contains_key(&i);
+        if already {
+            continue;
+        }
+        if let Err(e) = connect_target(&app, &cfg, i) {
+            let _ = app.emit(
+                "mirror:status",
+                MirrorStatus { target: i, state: "error", detail: e.clone() },
+            );
+            first_error.get_or_insert(e);
+        }
+    }
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Tear down one pane's session. Bumping the generation is what actually stops it: the task checks
+/// its own generation before every paint and returns quietly when it has been superseded.
+fn disconnect_target(app: &AppHandle, index: usize) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    state.mirror_generation.lock().unwrap().remove(&index);
+    let gone = state.mirror_keys.lock().unwrap().remove(&index);
+    if let Some(tx) = gone {
+        // Best effort: an agent that hears this releases held keys immediately rather than waiting
+        // for the connection to time out.
+        let _ = tx.try_send(protocol::ClientMsg::ReleaseAll);
+    }
+}
+
+fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), String> {
+    let target = cfg.agents.get(index).ok_or("no such mirror target")?.clone();
     if target.addr.is_empty() {
         return Err("no agent address configured".into());
     }
@@ -424,61 +536,63 @@ async fn mirror_connect(app: AppHandle, state: State<'_, AppState>) -> Result<()
         protocol::pin::parse_fingerprint(&target.fingerprint).map_err(|e| e.to_string())?;
 
     // Our own certificate lives beside the config. Its fingerprint is our identity to the agent,
-    // so this file is what "already paired" actually means.
+    // so this file is what "already paired" actually means. One certificate serves every target:
+    // it identifies this panel, not this connection.
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     let identity = mirror::ClientIdentity::load_or_create(&dir).map_err(|e| e.to_string())?;
 
-    // A stored token means we have not enrolled yet. Enrolment spends it, and we drop it
-    // afterwards so a copy can't linger in the credential store forever.
-    let auth = match agent_keyring(&cfg).ok().and_then(|e| e.get_password().ok()) {
-        Some(token) => protocol::Auth::Enrol { token },
-        None => protocol::Auth::Certificate,
-    };
-
+    let state = app.state::<AppState>();
     let generation = {
         let mut g = state.mirror_generation.lock().unwrap();
-        *g += 1;
-        *g
+        let next = g.get(&index).copied().unwrap_or(0) + 1;
+        g.insert(index, next);
+        next
     };
-    drop(auth); // recomputed per attempt below: enrolment spends the token, so it may change
+    let app = app.clone();
+    let token_addr = target.addr.clone();
 
     tauri::async_runtime::spawn(async move {
         // Reconnect with backoff. A console you glance at occasionally is useless if a brief
         // network blip leaves it dead until you notice and click something.
         let mut backoff = 1u64;
+        // Every emit is tagged with the pane it belongs to; without that, two live sessions paint
+        // into each other's canvases.
+        let status = |state: &'static str, detail: String| {
+            let _ = app.emit("mirror:status", MirrorStatus { target: index, state, detail });
+        };
         loop {
             let stale = app
                 .try_state::<AppState>()
-                .map(|s| *s.mirror_generation.lock().unwrap() != generation)
+                .map(|s| s.mirror_generation.lock().unwrap().get(&index) != Some(&generation))
                 .unwrap_or(true);
             if stale {
                 return;
             }
 
             // A stored token means we have not enrolled yet; enrolment spends it and we fall back
-            // to certificate auth from then on.
-            let auth = app
-                .try_state::<AppState>()
-                .and_then(|s| {
-                    let cfg = s.config.lock().unwrap().clone();
-                    agent_keyring(&cfg).ok()
-                })
+            // to certificate auth from then on. Keyed by address, so pairing a second machine does
+            // not disturb the first.
+            let auth = agent_keyring(&token_addr)
+                .ok()
                 .and_then(|e| e.get_password().ok())
                 .map_or(protocol::Auth::Certificate, |token| protocol::Auth::Enrol { token });
 
-            let _ = app.emit("mirror:status", Status { state: "connecting", detail: addr.to_string() });
+            status("connecting", addr.to_string());
 
             let (tx, mut rx) = tokio::sync::mpsc::channel(8);
             let (keys_tx, keys_rx) = tokio::sync::mpsc::channel(64);
             if let Some(s) = app.try_state::<AppState>() {
-                *s.mirror_keys.lock().unwrap() = Some(keys_tx);
+                s.mirror_keys.lock().unwrap().insert(index, keys_tx);
             }
 
             {
                 let (app, identity) = (app.clone(), identity.clone());
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = mirror::stream(addr, fingerprint, identity, auth, tx, keys_rx).await {
-                        let _ = app.emit("mirror:status", Status { state: "error", detail: format!("{e:#}") });
+                        let _ = app.emit(
+                            "mirror:status",
+                            MirrorStatus { target: index, state: "error", detail: format!("{e:#}") },
+                        );
                     }
                 });
             }
@@ -489,9 +603,8 @@ async fn mirror_connect(app: AppHandle, state: State<'_, AppState>) -> Result<()
                 // frames into one view.
                 let current = app
                     .try_state::<AppState>()
-                    .map(|s| *s.mirror_generation.lock().unwrap())
-                    .unwrap_or(0);
-                if current != generation {
+                    .and_then(|s| s.mirror_generation.lock().unwrap().get(&index).copied());
+                if current != Some(generation) {
                     return;
                 }
                 if matches!(ev, mirror::Event::Connected) {
@@ -502,51 +615,56 @@ async fn mirror_connect(app: AppHandle, state: State<'_, AppState>) -> Result<()
                     fatal = why.contains("not enrolled") || why.contains("pairing") || why.contains("token");
                 }
                 match ev {
-                mirror::Event::Connected => {
-                    let _ = app.emit("mirror:status", Status { state: "connected", detail: addr.to_string() });
-                }
+                mirror::Event::Connected => status("connected", addr.to_string()),
                 mirror::Event::Enrolled => {
                     // The token has done its one job. Delete it rather than leave a second, weaker
                     // way in sitting in the credential store.
-                    if let Some(state) = app.try_state::<AppState>() {
-                        let cfg = state.config.lock().unwrap().clone();
-                        if let Ok(entry) = agent_keyring(&cfg) {
-                            let _ = entry.delete_credential();
-                        }
+                    if let Ok(entry) = agent_keyring(&token_addr) {
+                        let _ = entry.delete_credential();
                     }
-                    let _ = app.emit("mirror:status", Status { state: "connected", detail: "paired".into() });
+                    status("connected", "paired".into());
                 }
                 mirror::Event::Input { enabled, reason } => {
-                    let _ = app.emit("mirror:input", Status {
+                    let _ = app.emit("mirror:input", MirrorStatus {
+                        target: index,
                         state: if enabled { "enabled" } else { "disabled" },
                         detail: reason,
                     });
                 }
                 mirror::Event::Screen(s) => {
-                    let _ = app.emit("mirror:frame", FramePayload::from(&s));
+                    let _ = app.emit("mirror:frame", FramePayload::of(index, &s));
                 }
                 mirror::Event::ScreenInfo { w, h } => {
-                    let _ = app.emit("mirror:screeninfo", serde_json::json!({ "w": w, "h": h }));
+                    let _ = app.emit(
+                        "mirror:screeninfo",
+                        serde_json::json!({ "target": index, "w": w, "h": h }),
+                    );
                 }
                 mirror::Event::Clipboard(text) => {
                     // Record before setting, because our own watcher may wake the instant we do —
                     // without this the two clipboards pass a value back and forth forever.
                     if let Some(s) = app.try_state::<AppState>() {
                         *s.clipboard_echo.lock().unwrap() = Some(text.clone());
+                        // With two machines mirrored, text copied on one should reach the other as
+                        // well as this PC. Sending it on from here rather than letting the watcher
+                        // do it is what makes that a fan-out instead of a loop: the origin is
+                        // excluded explicitly, and every *other* agent's own echo guard stops the
+                        // value bouncing back from there.
+                        s.broadcast(Some(index), protocol::ClientMsg::Clipboard { text: text.clone() });
                     }
                     winclip::set_text(&text);
                 }
                 mirror::Event::Pointer { x, y, visible } => {
                     let _ = app.emit(
                         "mirror:pointer",
-                        serde_json::json!({ "x": x, "y": y, "visible": visible }),
+                        serde_json::json!({ "target": index, "x": x, "y": y, "visible": visible }),
                     );
                 }
                 mirror::Event::PointerShape { w, h, hot_x, hot_y, png } => {
                     let _ = app.emit(
                         "mirror:pointershape",
                         serde_json::json!({
-                            "w": w, "h": h, "hotX": hot_x, "hotY": hot_y,
+                            "target": index, "w": w, "h": h, "hotX": hot_x, "hotY": hot_y,
                             "url": format!("data:image/png;base64,{}", B64.encode(&png)),
                         }),
                     );
@@ -557,20 +675,26 @@ async fn mirror_connect(app: AppHandle, state: State<'_, AppState>) -> Result<()
                     let _ = app.emit(
                         "mirror:raster",
                         serde_json::json!({
-                            "x": x, "y": y, "w": w, "h": h,
+                            "target": index, "x": x, "y": y, "w": w, "h": h,
                             "url": format!("data:{mime};base64,{}", B64.encode(&data)),
                         }),
                     );
                 }
                 mirror::Event::Closed(why) => {
-                    let _ = app.emit("mirror:status", Status { state: "disconnected", detail: why });
+                    status("disconnected", why);
                     break;
                 }
                 }
             }
 
+            // Only clear our own slot, and only if a newer session hasn't already claimed it.
             if let Some(s) = app.try_state::<AppState>() {
-                *s.mirror_keys.lock().unwrap() = None;
+                let ours = s.mirror_generation.lock().unwrap().get(&index) == Some(&generation);
+                if ours {
+                    s.mirror_keys.lock().unwrap().remove(&index);
+                } else {
+                    return;
+                }
             }
             if fatal {
                 return;
@@ -676,14 +800,14 @@ fn main() {
             hide_panel,
             has_agent_token,
             set_agent_token,
-            mirror_connect,
+            mirror_sync,
             mirror_key,
             mirror_release_all,
             mirror_switch_vt,
             mirror_mouse,
             set_hotkey,
             forget_pve_credential,
-            set_active_agent,
+            set_visible,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -712,10 +836,9 @@ fn main() {
                         if state.clipboard_echo.lock().unwrap().as_deref() == Some(text.as_str()) {
                             continue;
                         }
-                        let keys = state.mirror_keys.lock().unwrap();
-                        if let Some(tx) = keys.as_ref() {
-                            let _ = tx.try_send(protocol::ClientMsg::Clipboard { text });
-                        }
+                        // Everything mirrored gets it: you copied here, so "the other machine"
+                        // means all of them.
+                        state.broadcast(None, protocol::ClientMsg::Clipboard { text });
                     }
                 });
             }
