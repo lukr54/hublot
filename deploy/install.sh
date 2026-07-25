@@ -25,7 +25,14 @@ fi
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 BIN="$HERE/host-agent"
-[ -x "$BIN" ] || { echo "no executable host-agent beside this script" >&2; exit 1; }
+# Existence, not the executable bit. The binary is usually built on one machine and carried here
+# through a Windows checkout, a zip, or an scp — several of which drop the mode — and `install`
+# below sets 0755 regardless. Refusing on a missing bit fails a package that is perfectly fine.
+[ -f "$BIN" ] || { echo "no host-agent beside this script" >&2; exit 1; }
+case "$(head -c 4 "$BIN" | od -An -tx1 | tr -d ' \n')" in
+    7f454c46) ;;
+    *) echo "$BIN is not a Linux executable — build it for this machine's architecture" >&2; exit 1 ;;
+esac
 
 # Ask the routing table rather than guessing: on a Proxmox node the answer is vmbr0's address,
 # which is exactly the interface the panel talks to.
