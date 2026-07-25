@@ -90,6 +90,15 @@ pub enum ClientMsg {
     Key { code: u16, down: bool },
     /// Release everything held. Sent on focus loss, view change, and window hide.
     ReleaseAll,
+    /// Absolute pointer position, in the captured screen's own pixels.
+    ///
+    /// Absolute rather than relative on purpose: a lost or reordered motion message is corrected by
+    /// the very next one, where a lost *delta* would leave the two cursors permanently offset.
+    MouseMove { x: u16, y: u16 },
+    /// 0 = left, 1 = right, 2 = middle.
+    MouseButton { button: u8, down: bool },
+    /// Wheel notches; positive is away from the user.
+    MouseScroll { dx: i16, dy: i16 },
     /// Switch the active console by **ioctl**, not by injecting Ctrl+Alt+Fn.
     ///
     /// This exists because a VT whose keyboard is disabled (`K_OFF`) ignores the chord that would

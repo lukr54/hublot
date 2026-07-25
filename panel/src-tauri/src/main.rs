@@ -370,6 +370,32 @@ fn mirror_release_all(state: State<'_, AppState>) {
     }
 }
 
+#[tauri::command]
+fn mirror_mouse(
+    state: State<'_, AppState>,
+    kind: String,
+    x: u16,
+    y: u16,
+    button: u8,
+    down: bool,
+    dx: i16,
+    dy: i16,
+) -> Result<(), String> {
+    let msg = match kind.as_str() {
+        "move" => protocol::ClientMsg::MouseMove { x, y },
+        "button" => protocol::ClientMsg::MouseButton { button, down },
+        "scroll" => protocol::ClientMsg::MouseScroll { dx, dy },
+        _ => return Ok(()),
+    };
+    let keys = state.mirror_keys.lock().unwrap();
+    if let Some(tx) = keys.as_ref() {
+        // Motion is dropped rather than queued when the link is saturated: a stale pointer position
+        // is worthless, and the next one is already on its way.
+        let _ = tx.try_send(msg);
+    }
+    Ok(())
+}
+
 /// Switch console by ioctl rather than by injecting Ctrl+Alt+Fn.
 ///
 /// A console with its keyboard disabled ignores the chord that would take you off it, so
@@ -629,6 +655,7 @@ fn main() {
             mirror_key,
             mirror_release_all,
             mirror_switch_vt,
+            mirror_mouse,
             set_hotkey,
             forget_pve_credential,
             set_active_agent,

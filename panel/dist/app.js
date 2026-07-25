@@ -259,9 +259,108 @@ listen("mirror:raster", (e) => {
   const img = new Image();
   // Decoding happens off the main thread; drawing a stale tile is harmless because the next one
   // for that region supersedes it.
-  img.onload = () => screenCtx.drawImage(img, x, y);
+  img.onload = () => {
+    screenCtx.drawImage(img, x, y);
+    drawCursor();
+  };
   img.src = url;
 });
+
+// ── pointer ─────────────────────────────────────────────────────────────────
+//
+// Desktop Duplication deliberately excludes the mouse pointer from captured frames — it is
+// delivered separately, as a shape and position. Until we composite the real one, the panel draws
+// its own at the last position it *sent*. That is client-side prediction: it feels instant because
+// it owes nothing to the round trip, but it will not show the remote cursor's shape, nor follow it
+// when the remote machine moves the pointer itself.
+
+let cursor = null;
+
+function drawCursor() {
+  if (!cursor) return;
+  const { x, y } = cursor;
+  screenCtx.save();
+  screenCtx.beginPath();
+  screenCtx.moveTo(x, y);
+  screenCtx.lineTo(x, y + 17);
+  screenCtx.lineTo(x + 5, y + 13);
+  screenCtx.lineTo(x + 9, y + 20);
+  screenCtx.lineTo(x + 12, y + 18);
+  screenCtx.lineTo(x + 8, y + 11);
+  screenCtx.lineTo(x + 13, y + 11);
+  screenCtx.closePath();
+  screenCtx.fillStyle = "#fff";
+  screenCtx.strokeStyle = "#000";
+  screenCtx.lineWidth = 1.5;
+  screenCtx.stroke();
+  screenCtx.fill();
+  screenCtx.restore();
+}
+
+/// Canvas pixels → remote screen pixels. The canvas is displayed scaled to fit, so a click at the
+/// visible position must be undone by that same scale before it means anything remotely.
+function toScreen(e) {
+  const r = screenEl.getBoundingClientRect();
+  const x = ((e.clientX - r.left) / r.width) * screenEl.width;
+  const y = ((e.clientY - r.top) / r.height) * screenEl.height;
+  return {
+    x: Math.max(0, Math.min(screenEl.width - 1, Math.round(x))),
+    y: Math.max(0, Math.min(screenEl.height - 1, Math.round(y))),
+  };
+}
+
+function sendMouse(kind, opts = {}) {
+  if (!inputEnabled) return;
+  invoke("mirror_mouse", {
+    kind,
+    x: opts.x ?? 0,
+    y: opts.y ?? 0,
+    button: opts.button ?? 0,
+    down: opts.down ?? false,
+    dx: opts.dx ?? 0,
+    dy: opts.dy ?? 0,
+  }).catch(() => {});
+}
+
+// Coalesce motion to one message per animation frame. A mouse can produce far more events than a
+// remote desktop can usefully consume, and only the newest position matters.
+let pendingMove = null;
+screenEl.addEventListener("mousemove", (e) => {
+  const p = toScreen(e);
+  cursor = p;
+  if (pendingMove) return;
+  pendingMove = requestAnimationFrame(() => {
+    pendingMove = null;
+    sendMouse("move", cursor);
+    drawCursor();
+  });
+});
+
+const BUTTON = { 0: 0, 2: 1, 1: 2 }; // browser order → left / right / middle
+
+screenEl.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  screenEl.focus();
+  const p = toScreen(e);
+  sendMouse("move", p);
+  sendMouse("button", { button: BUTTON[e.button] ?? 0, down: true });
+});
+screenEl.addEventListener("mouseup", (e) => {
+  e.preventDefault();
+  sendMouse("button", { button: BUTTON[e.button] ?? 0, down: false });
+});
+// Otherwise a right-click opens the *panel's* context menu instead of the remote machine's.
+screenEl.addEventListener("contextmenu", (e) => e.preventDefault());
+screenEl.addEventListener(
+  "wheel",
+  (e) => {
+    e.preventDefault();
+    sendMouse("scroll", { dx: Math.sign(-e.deltaX), dy: Math.sign(-e.deltaY) });
+  },
+  { passive: false }
+);
+// Leaving the canvas with a button held would strand it down on the other machine.
+screenEl.addEventListener("mouseleave", () => release());
 
 listen("mirror:frame", (e) => paint(e.payload));
 listen("mirror:status", (e) => {

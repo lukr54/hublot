@@ -51,6 +51,20 @@ async fn main() -> Result<()> {
             mirror::Event::Enrolled => println!("✓ enrolled — the token is now spent"),
             mirror::Event::Input { enabled, reason } => {
                 println!("· input {}{}", if enabled { "enabled" } else { "DISABLED" }, if reason.is_empty() { String::new() } else { format!(" ({reason})") });
+                // HUBLOT_MOUSE="800,400" — move the remote pointer there. Verifiable from outside
+                // the panel by asking the OS where its cursor ended up.
+                if let Ok(spec) = std::env::var("HUBLOT_MOUSE") {
+                    if let Some((sx, sy)) = spec.split_once(',') {
+                        if let (Ok(x), Ok(y)) = (sx.trim().parse::<u16>(), sy.trim().parse::<u16>()) {
+                            let keys = keys_tx.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                                let _ = keys.send(protocol::ClientMsg::MouseMove { x, y }).await;
+                                eprintln!("  moved pointer to {x},{y}");
+                            });
+                        }
+                    }
+                }
                 // HUBLOT_SWITCH_VT=2 — switch console by ioctl. Works even when this badge says
                 // input is off, which is the entire point (DECISIONS.md D13).
                 if let Ok(vt) = std::env::var("HUBLOT_SWITCH_VT") {

@@ -12,6 +12,8 @@
 mod autostart;
 #[cfg(windows)]
 mod capture;
+#[cfg(windows)]
+mod inject;
 
 #[cfg(not(windows))]
 fn main() {
@@ -118,20 +120,57 @@ async fn serve(
 ) -> anyhow::Result<()> {
     use anyhow::Context;
     use protocol::ServerMsg;
-    use tokio::sync::broadcast::error::RecvError;
 
     let conn = incoming.await.context("handshake")?;
     let (mut send, mut recv) = conn.accept_bi().await.context("accepting stream")?;
     agent_core::authenticate(&conn, &mut send, &mut recv, &id, pairing_open).await?;
 
     protocol::write_msg(&mut send, &ServerMsg::ScreenInfo { w: screen_w, h: screen_h }).await?;
-    // No injection path exists in this binary yet, and the panel is told so plainly rather than
-    // discovering it by having keystrokes vanish.
-    protocol::write_msg(
-        &mut send,
-        &ServerMsg::Input { enabled: false, reason: "this agent is view-only (Phase 6a)".into() },
-    )
-    .await?;
+    protocol::write_msg(&mut send, &ServerMsg::Input { enabled: true, reason: String::new() })
+        .await?;
+
+    // The injector belongs to this connection. Dropping it releases everything held — which on
+    // Windows we must do ourselves, since there is no kernel here to release a dying device's keys
+    // the way there is for uinput.
+    let input_task = tokio::spawn(input_loop(recv, inject::Injector::new(screen_w, screen_h)));
+
+    let result = stream_tiles(&mut send, tx).await;
+    input_task.abort();
+    result
+}
+
+#[cfg(windows)]
+async fn input_loop(mut recv: quinn::RecvStream, mut inj: inject::Injector) {
+    use protocol::ClientMsg;
+    eprintln!("[hublot] input loop ready");
+    loop {
+        match protocol::read_msg::<ClientMsg>(&mut recv).await {
+            Ok(ClientMsg::Key { code, down }) => inj.key(code, down),
+            Ok(ClientMsg::MouseMove { x, y }) => inj.move_to(x, y),
+            Ok(ClientMsg::MouseButton { button, down }) => inj.button(button, down),
+            Ok(ClientMsg::MouseScroll { dx, dy }) => inj.scroll(dx, dy),
+            Ok(ClientMsg::ReleaseAll) => inj.release_all(),
+            // Only a console has VTs to switch between.
+            Ok(ClientMsg::SwitchVt { .. }) => {}
+            Ok(ClientMsg::Hello { .. }) => {
+                eprintln!("[hublot] input loop stopping: unexpected second Hello");
+                return;
+            }
+            Err(e) => {
+                eprintln!("[hublot] input loop stopping: {e:#}");
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn stream_tiles(
+    send: &mut quinn::SendStream,
+    tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Tile>>,
+) -> anyhow::Result<()> {
+    use protocol::ServerMsg;
+    use tokio::sync::broadcast::error::RecvError;
 
     let mut rx = tx.subscribe();
     loop {
@@ -146,7 +185,7 @@ async fn serve(
             Err(RecvError::Closed) => return Ok(()),
         };
         protocol::write_msg(
-            &mut send,
+            send,
             &ServerMsg::Raster {
                 x: tile.x,
                 y: tile.y,
