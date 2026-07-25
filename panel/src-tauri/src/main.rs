@@ -526,6 +526,21 @@ async fn mirror_connect(app: AppHandle, state: State<'_, AppState>) -> Result<()
                 mirror::Event::ScreenInfo { w, h } => {
                     let _ = app.emit("mirror:screeninfo", serde_json::json!({ "w": w, "h": h }));
                 }
+                mirror::Event::Pointer { x, y, visible } => {
+                    let _ = app.emit(
+                        "mirror:pointer",
+                        serde_json::json!({ "x": x, "y": y, "visible": visible }),
+                    );
+                }
+                mirror::Event::PointerShape { w, h, hot_x, hot_y, png } => {
+                    let _ = app.emit(
+                        "mirror:pointershape",
+                        serde_json::json!({
+                            "w": w, "h": h, "hotX": hot_x, "hotY": hot_y,
+                            "url": format!("data:image/png;base64,{}", B64.encode(&png)),
+                        }),
+                    );
+                }
                 mirror::Event::Raster { x, y, w, h, mime, data } => {
                     // A data: URL is the cheapest path to the canvas — the webview's own image
                     // decoders do the work, and we never hand the frontend anything but pixels.

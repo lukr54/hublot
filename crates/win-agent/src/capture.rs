@@ -21,8 +21,17 @@ pub struct Capture {
     context: ID3D11DeviceContext,
     dup: IDXGIOutputDuplication,
     staging: ID3D11Texture2D,
+    pointer: crate::pointer::Pointer,
     pub width: u32,
     pub height: u32,
+}
+
+/// What one capture wake-up produced: possibly a changed region, possibly pointer news, possibly
+/// both. Pointer movement alone is the common case and must not force a repaint.
+pub enum Update {
+    Tile(Tile),
+    Pointer { x: i16, y: i16, visible: bool },
+    Shape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
 }
 
 /// A changed region, already encoded.
@@ -92,6 +101,7 @@ impl Capture {
                 context,
                 dup,
                 staging: staging.context("no staging texture")?,
+                pointer: Default::default(),
                 width,
                 height,
             })
@@ -103,19 +113,41 @@ impl Capture {
         self.grab(None)
     }
 
-    /// Wait for the next change and return it as one encoded tile, or `None` on timeout.
+    /// Wait for the next change and return everything it produced.
     ///
     /// The bounding box of all dirty rectangles is used rather than each rectangle separately:
     /// per-tile overhead and round trips cost more than the few extra pixels, at the change sizes
     /// actually measured.
-    pub fn next_change(&mut self, timeout_ms: u32) -> Result<Option<Tile>> {
+    pub fn next_change(&mut self, timeout_ms: u32) -> Result<Vec<Update>> {
+        let mut updates = Vec::new();
         unsafe {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
             match self.dup.AcquireNextFrame(timeout_ms, &mut info, &mut resource) {
                 Ok(()) => {}
-                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
+                Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(updates),
                 Err(e) => bail!("AcquireNextFrame: {e}"),
+            }
+
+            let before = (self.pointer.x, self.pointer.y, self.pointer.visible);
+            self.pointer.update(&self.dup, &info)?;
+            if let Some(shape) = self.pointer.fresh_shape.take() {
+                if let Ok(png) = crate::pointer::to_png(&shape) {
+                    updates.push(Update::Shape {
+                        w: shape.w as u16,
+                        h: shape.h as u16,
+                        hot_x: shape.hot_x as u16,
+                        hot_y: shape.hot_y as u16,
+                        png,
+                    });
+                }
+            }
+            if (self.pointer.x, self.pointer.y, self.pointer.visible) != before {
+                updates.push(Update::Pointer {
+                    x: self.pointer.x as i16,
+                    y: self.pointer.y as i16,
+                    visible: self.pointer.visible,
+                });
             }
 
             let bbox = if info.TotalMetadataBufferSize > 0 {
@@ -145,18 +177,16 @@ impl Capture {
                 None
             };
 
-            let tile = match bbox {
-                // Cursor-only movement: nothing to repaint. Releasing without sending keeps an
-                // idle desktop free.
-                None => None,
-                Some(r) => {
-                    let tex: ID3D11Texture2D = resource.as_ref().unwrap().cast()?;
-                    self.context.CopyResource(&self.staging, &tex);
-                    Some(self.encode(r)?)
-                }
-            };
+            // Cursor-only movement leaves `bbox` empty: the pointer news above is the whole update
+            // and nothing needs repainting, which is what keeps an idle desktop nearly free.
+            if let Some(r) = bbox {
+                let tex: ID3D11Texture2D = resource.as_ref().unwrap().cast()?;
+                self.context.CopyResource(&self.staging, &tex);
+                let tile = self.encode(r)?;
+                updates.push(Update::Tile(tile));
+            }
             self.dup.ReleaseFrame()?;
-            Ok(tile)
+            Ok(updates)
         }
     }
 

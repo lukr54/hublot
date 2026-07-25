@@ -237,6 +237,8 @@ listen("mirror:screeninfo", (e) => {
   const { w, h } = e.payload;
   screenEl.width = w;
   screenEl.height = h;
+  desk.width = w;
+  desk.height = h;
   screenEl.hidden = false;
   mir.grid.hidden = true;
   fitScreen();
@@ -254,13 +256,20 @@ function fitScreen() {
 }
 new ResizeObserver(fitScreen).observe(mir.pane);
 
+// The desktop is kept twice: once clean, once with the cursor drawn on it. Without the clean copy
+// there is nothing to paint back over the cursor's last position, and it leaves a trail.
+const desk = document.createElement("canvas");
+const deskCtx = desk.getContext("2d");
+
 listen("mirror:raster", (e) => {
   const { x, y, url } = e.payload;
   const img = new Image();
   // Decoding happens off the main thread; drawing a stale tile is harmless because the next one
   // for that region supersedes it.
   img.onload = () => {
+    deskCtx.drawImage(img, x, y);
     screenCtx.drawImage(img, x, y);
+    lastCursorRect = null; // that tile may have painted over the cursor
     drawCursor();
   };
   img.src = url;
@@ -268,34 +277,46 @@ listen("mirror:raster", (e) => {
 
 // ── pointer ─────────────────────────────────────────────────────────────────
 //
-// Desktop Duplication deliberately excludes the mouse pointer from captured frames — it is
-// delivered separately, as a shape and position. Until we composite the real one, the panel draws
-// its own at the last position it *sent*. That is client-side prediction: it feels instant because
-// it owes nothing to the round trip, but it will not show the remote cursor's shape, nor follow it
-// when the remote machine moves the pointer itself.
+// Desktop Duplication excludes the pointer from captured frames — Windows composites the cursor in
+// hardware — so it arrives separately: a position on every change, a shape only when it changes.
+// The viewer therefore draws the *real* remote cursor, which means it follows moves the remote
+// machine makes itself, not just ours.
 
-let cursor = null;
+let cursor = { x: 0, y: 0, visible: false };
+let cursorImg = null;
+let cursorHot = { x: 0, y: 0 };
+let lastCursorRect = null;
 
+/// Erase the cursor by repainting that rectangle from the clean copy, then draw it at its new
+/// place. Two small blits per move rather than one full-screen repaint.
 function drawCursor() {
-  if (!cursor) return;
-  const { x, y } = cursor;
-  screenCtx.save();
-  screenCtx.beginPath();
-  screenCtx.moveTo(x, y);
-  screenCtx.lineTo(x, y + 17);
-  screenCtx.lineTo(x + 5, y + 13);
-  screenCtx.lineTo(x + 9, y + 20);
-  screenCtx.lineTo(x + 12, y + 18);
-  screenCtx.lineTo(x + 8, y + 11);
-  screenCtx.lineTo(x + 13, y + 11);
-  screenCtx.closePath();
-  screenCtx.fillStyle = "#fff";
-  screenCtx.strokeStyle = "#000";
-  screenCtx.lineWidth = 1.5;
-  screenCtx.stroke();
-  screenCtx.fill();
-  screenCtx.restore();
+  if (lastCursorRect) {
+    const r = lastCursorRect;
+    screenCtx.drawImage(desk, r.x, r.y, r.w, r.h, r.x, r.y, r.w, r.h);
+    lastCursorRect = null;
+  }
+  if (!cursor.visible || !cursorImg) return;
+  const x = cursor.x - cursorHot.x;
+  const y = cursor.y - cursorHot.y;
+  screenCtx.drawImage(cursorImg, x, y);
+  lastCursorRect = { x, y, w: cursorImg.width, h: cursorImg.height };
 }
+
+listen("mirror:pointer", (e) => {
+  cursor = e.payload;
+  drawCursor();
+});
+
+listen("mirror:pointershape", (e) => {
+  const { url, hotX, hotY } = e.payload;
+  const img = new Image();
+  img.onload = () => {
+    cursorImg = img;
+    cursorHot = { x: hotX, y: hotY };
+    drawCursor();
+  };
+  img.src = url;
+});
 
 /// Canvas pixels → remote screen pixels. The canvas is displayed scaled to fit, so a click at the
 /// visible position must be undone by that same scale before it means anything remotely.
@@ -325,14 +346,15 @@ function sendMouse(kind, opts = {}) {
 // Coalesce motion to one message per animation frame. A mouse can produce far more events than a
 // remote desktop can usefully consume, and only the newest position matters.
 let pendingMove = null;
+let aimedAt = { x: 0, y: 0 };
 screenEl.addEventListener("mousemove", (e) => {
-  const p = toScreen(e);
-  cursor = p;
+  aimedAt = toScreen(e);
   if (pendingMove) return;
   pendingMove = requestAnimationFrame(() => {
     pendingMove = null;
-    sendMouse("move", cursor);
-    drawCursor();
+    // Only the position is sent; the drawn cursor comes back from the agent, so what you see is
+    // where the pointer actually is rather than where we hoped it would go.
+    sendMouse("move", aimedAt);
   });
 });
 

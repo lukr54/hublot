@@ -14,6 +14,8 @@ mod autostart;
 mod capture;
 #[cfg(windows)]
 mod inject;
+#[cfg(windows)]
+mod pointer;
 
 #[cfg(not(windows))]
 fn main() {
@@ -59,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
 
     // One capture thread owns the DXGI objects and broadcasts encoded tiles. Capture blocks, so it
     // gets an OS thread rather than starving a runtime worker — same shape as the console watcher.
-    let (tx, _) = broadcast::channel::<Arc<capture::Tile>>(64);
+    let (tx, _) = broadcast::channel::<Arc<capture::Update>>(64);
     let (info_tx, info_rx) = std::sync::mpsc::channel::<(u16, u16)>();
     {
         let tx = tx.clone();
@@ -75,10 +77,11 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("[hublot] capturing {}x{}", cap.width, cap.height);
             loop {
                 match cap.next_change(500) {
-                    Ok(Some(tile)) => {
-                        let _ = tx.send(Arc::new(tile));
+                    Ok(updates) => {
+                        for u in updates {
+                            let _ = tx.send(Arc::new(u));
+                        }
                     }
-                    Ok(None) => {} // nothing changed; costs nothing
                     Err(e) => {
                         eprintln!("[hublot] capture stopped: {e:#}");
                         std::process::exit(1);
@@ -114,7 +117,7 @@ async fn serve(
     incoming: quinn::Incoming,
     id: std::sync::Arc<agent_core::Identity>,
     pairing_open: bool,
-    tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Tile>>,
+    tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Update>>,
     screen_w: u16,
     screen_h: u16,
 ) -> anyhow::Result<()> {
@@ -167,34 +170,43 @@ async fn input_loop(mut recv: quinn::RecvStream, mut inj: inject::Injector) {
 #[cfg(windows)]
 async fn stream_tiles(
     send: &mut quinn::SendStream,
-    tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Tile>>,
+    tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Update>>,
 ) -> anyhow::Result<()> {
     use protocol::ServerMsg;
     use tokio::sync::broadcast::error::RecvError;
 
     let mut rx = tx.subscribe();
     loop {
-        let tile = match rx.recv().await {
-            Ok(t) => t,
+        let update = match rx.recv().await {
+            Ok(u) => u,
             // Falling behind means the desktop is changing faster than this link can carry it.
-            // Skipping is correct: the next tile supersedes what we missed anyway.
+            // Skipping is correct: the next update supersedes what we missed anyway.
             Err(RecvError::Lagged(n)) => {
-                eprintln!("[hublot] viewer fell behind, dropped {n} tiles");
+                eprintln!("[hublot] viewer fell behind, dropped {n} updates");
                 continue;
             }
             Err(RecvError::Closed) => return Ok(()),
         };
-        protocol::write_msg(
-            send,
-            &ServerMsg::Raster {
-                x: tile.x,
-                y: tile.y,
-                w: tile.w,
-                h: tile.h,
-                format: tile.format,
-                data: tile.data.clone(),
+        let msg = match &*update {
+            capture::Update::Tile(t) => ServerMsg::Raster {
+                x: t.x,
+                y: t.y,
+                w: t.w,
+                h: t.h,
+                format: t.format,
+                data: t.data.clone(),
             },
-        )
-        .await?;
+            capture::Update::Pointer { x, y, visible } => {
+                ServerMsg::Pointer { x: *x, y: *y, visible: *visible }
+            }
+            capture::Update::Shape { w, h, hot_x, hot_y, png } => ServerMsg::PointerShape {
+                w: *w,
+                h: *h,
+                hot_x: *hot_x,
+                hot_y: *hot_y,
+                png: png.clone(),
+            },
+        };
+        protocol::write_msg(send, &msg).await?;
     }
 }

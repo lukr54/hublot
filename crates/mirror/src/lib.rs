@@ -28,6 +28,9 @@ pub enum Event {
     ScreenInfo { w: u16, h: u16 },
     /// A changed rectangle of that desktop, already compressed.
     Raster { x: u16, y: u16, w: u16, h: u16, mime: &'static str, data: Vec<u8> },
+    /// Where the remote pointer is, and what it looks like — both arrive outside the frames.
+    Pointer { x: i16, y: i16, visible: bool },
+    PointerShape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
     Closed(String),
 }
 
@@ -177,6 +180,14 @@ async fn read_loop(recv: &mut quinn::RecvStream, tx: &mpsc::Sender<Event>) -> Re
                 let _ = tx
                     .send(Event::Raster { x, y, w, h, mime: format.mime(), data })
                     .await;
+                continue;
+            }
+            ServerMsg::Pointer { x, y, visible } => {
+                let _ = tx.send(Event::Pointer { x, y, visible }).await;
+                continue;
+            }
+            ServerMsg::PointerShape { w, h, hot_x, hot_y, png } => {
+                let _ = tx.send(Event::PointerShape { w, h, hot_x, hot_y, png }).await;
                 continue;
             }
             ServerMsg::Error(e) => {

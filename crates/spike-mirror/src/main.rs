@@ -142,6 +142,12 @@ async fn main() -> Result<()> {
                 // bytes-per-update is the number that decides whether this leg is viable.
                 println!("  tile {w}x{h} at {x},{y} — {} bytes {mime}", data.len());
             }
+            mirror::Event::Pointer { x, y, visible } => {
+                println!("  pointer {x},{y} visible={visible}");
+            }
+            mirror::Event::PointerShape { w, h, hot_x, hot_y, png } => {
+                println!("  pointer shape {w}x{h} hotspot {hot_x},{hot_y} — {} bytes", png.len());
+            }
             mirror::Event::Closed(why) => {
                 println!("\n── closed: {why} ──");
                 break;

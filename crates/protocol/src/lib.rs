@@ -122,6 +122,12 @@ pub enum ServerMsg {
     Enrolled,
     /// Geometry of a graphical desktop. Sent once on connect and whenever it changes.
     ScreenInfo { w: u16, h: u16 },
+    /// Where the remote pointer is. Captured frames never contain it — Windows composites the
+    /// cursor in hardware — so it travels separately and the viewer draws it.
+    Pointer { x: i16, y: i16, visible: bool },
+    /// What the remote pointer looks like. Sent only when it changes, so the viewer caches it.
+    /// PNG because a cursor is hard edges plus an alpha channel.
+    PointerShape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
     /// A rectangle of the desktop that changed.
     ///
     /// The console leg ships characters because the kernel finished the rendering for us; a
