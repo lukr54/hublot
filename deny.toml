@@ -1,0 +1,62 @@
+# cargo-deny: what may end up inside a process that can type at a root console.
+#
+# The point of this file is THREAT-MODEL §5 — "the network parser is the attack surface, keep the
+# dependency tree small" — turned into something CI can check.
+
+[graph]
+# Deliberately not set here. The two workspaces ship to different platforms, so CI passes
+# `--target` per run — pinning both triples in this file would pull Tauri's Linux GTK/WebKit tree
+# into a check for software that only ever compiles on Windows.
+targets = []
+
+[advisories]
+version = 2
+yanked = "deny"
+# Vulnerabilities always fail. "Unmaintained" is a different claim — it says nobody is looking after
+# a crate, not that anything is wrong with it — and applying it transitively means failing the build
+# over five `unic-*` crates buried inside Tauri, which we can neither fix nor drop. Held to our own
+# direct dependencies, where it is actionable.
+unmaintained = "workspace"
+# Add ignores here only with a reason and a date, never to make the build green.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive only. Nothing here is published, but a copyleft dependency arriving unnoticed is
+# exactly the kind of thing you want to hear about while it is still one commit to remove.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # File-level copyleft, and only on files you modify. It arrives through Tauri's CSS handling
+    # (cssparser, selectors) and through `dirs`; nothing here modifies any of them.
+    "MPL-2.0",
+]
+confidence-threshold = 0.9
+# Several of the above are not in the tree today. They stay listed rather than being trimmed to
+# exactly what is present: the alternative is a build that fails because a transitive dependency
+# picked up a licence that was always going to be acceptable.
+unused-allowed-license = "allow"
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+# A wildcard on a *registry* crate means you have no idea what you are compiling. A wildcard on a
+# path dependency inside this repo means it is a crate in this repo, which is the point of splitting
+# them up — nothing here is published, so there is no version to pin.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

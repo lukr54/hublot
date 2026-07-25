@@ -21,6 +21,10 @@ pub const ALPN: &[u8] = b"hublot/1";
 /// orders of magnitude of headroom and still bounds what a hostile peer can make us allocate.
 pub const MAX_MSG: usize = 1 << 20;
 
+/// The cap on the *first* message, before anyone has proved they belong here. A `Hello` is a
+/// version and a 64-character token; 8 KiB is generous. See `read_msg_capped`.
+pub const MAX_HELLO: usize = 8 * 1024;
+
 /// Clipboard payloads above this are dropped rather than synced. Someone copying a large file's
 /// worth of text should not have it silently cross the network, and it bounds what a hostile peer
 /// can push into your clipboard.
@@ -204,6 +208,14 @@ pub fn apply(screen: &mut Screen, runs: &[Run]) -> bool {
 
 // ── framing ─────────────────────────────────────────────────────────────────────────────────────
 
+/// Decode one message body.
+///
+/// Split out from `read_msg` so the fuzzer can reach exactly the code the wire reaches. A fuzz
+/// target that re-implements the decode step tests the re-implementation.
+pub fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T> {
+    postcard::from_bytes(body).context("decoding message")
+}
+
 pub async fn write_msg<T: Serialize>(send: &mut quinn::SendStream, msg: &T) -> Result<()> {
     let body = postcard::to_stdvec(msg).context("encoding message")?;
     if body.len() > MAX_MSG {
@@ -215,15 +227,30 @@ pub async fn write_msg<T: Serialize>(send: &mut quinn::SendStream, msg: &T) -> R
 }
 
 pub async fn read_msg<T: DeserializeOwned>(recv: &mut quinn::RecvStream) -> Result<T> {
+    read_msg_capped(recv, MAX_MSG).await
+}
+
+/// Read one message, refusing anything larger than `max`.
+///
+/// The cap exists because the length prefix is believed *before* the body arrives: we allocate what
+/// the peer says it is about to send. For an established session that is fine — `MAX_MSG` is a
+/// frame budget. For the **first** message it is not: enrolment deliberately accepts a certificate
+/// the agent has never seen, so anyone who can complete a TLS handshake can open a connection,
+/// announce a megabyte and never send it. A handful of bytes of attacker effort should not buy a
+/// megabyte of ours, so the handshake uses `MAX_HELLO` instead (THREAT-MODEL §9).
+pub async fn read_msg_capped<T: DeserializeOwned>(
+    recv: &mut quinn::RecvStream,
+    max: usize,
+) -> Result<T> {
     let mut len = [0u8; 4];
     recv.read_exact(&mut len).await.context("reading length prefix")?;
     let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_MSG {
+    if len > max {
         bail!("peer announced a {len} byte message; refusing");
     }
     let mut body = vec![0u8; len];
     recv.read_exact(&mut body).await.context("reading body")?;
-    postcard::from_bytes(&body).context("decoding message")
+    decode(&body)
 }
 
 #[cfg(test)]

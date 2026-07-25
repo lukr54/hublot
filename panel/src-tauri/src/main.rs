@@ -438,6 +438,9 @@ fn mirror_release_all(state: State<'_, AppState>) {
     state.broadcast(None, protocol::ClientMsg::ReleaseAll);
 }
 
+// A Tauri command's arguments are its wire format — the webview names each one — so collapsing
+// these into a struct would just move the same nine fields somewhere less obvious.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn mirror_mouse(
     state: State<'_, AppState>,

@@ -185,7 +185,7 @@ mod windows_impl {
         }
     }
 
-    fn median(v: &mut Vec<u128>) -> u128 {
+    fn median(v: &mut [u128]) -> u128 {
         if v.is_empty() {
             return 0;
         }

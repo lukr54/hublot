@@ -14,6 +14,7 @@
 use anyhow::Result;
 use windows::Win32::Graphics::Dxgi::*;
 
+#[derive(Default)]
 pub struct Pointer {
     pub x: i32,
     pub y: i32,
@@ -29,12 +30,6 @@ pub struct Shape {
     pub hot_y: u32,
     /// RGBA, ready to become a PNG.
     pub rgba: Vec<u8>,
-}
-
-impl Default for Pointer {
-    fn default() -> Self {
-        Self { x: 0, y: 0, visible: false, fresh_shape: None }
-    }
 }
 
 impl Pointer {

@@ -1,0 +1,6 @@
+# These are copied from a Windows checkout to a Linux host and run there. With CRLF endings the
+# kernel reads the shebang as `/bin/sh\r` and reports "bad interpreter" for a file that is plainly
+# there — one of the least helpful error messages in computing.
+*.sh text eol=lf
+*.service text eol=lf
+*.rules text eol=lf

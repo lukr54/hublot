@@ -57,6 +57,18 @@ cp Cargo-linux.toml Cargo.toml && cargo build --release -p host-agent
 | [DECISIONS.md](DECISIONS.md) | why each choice, with evidence and rejected alternatives |
 | [THREAT-MODEL.md](THREAT-MODEL.md) | assets, adversaries, and the things that make this dangerous |
 
+## Checks
+
+`cargo test`, `cargo clippy -- -D warnings` and `cargo deny` run in CI on both platforms — the two
+workspaces are checked separately because they compile different code (see `Cargo-linux.toml`).
+
+The protocol parser has fuzz targets in [fuzz/](fuzz), because it decodes attacker-reachable bytes
+inside a process that can type at a root console:
+
+```bash
+cargo +nightly fuzz run client_msg -- -rss_limit_mb=512
+```
+
 ## Installing
 
 ```bash
@@ -83,6 +95,24 @@ session; a logon task reaches the same place directly.
 
 > Run `--install` from your own terminal. Task and registry changes made from a sandboxed shell can
 > be virtualised away and silently fail to take effect.
+
+## Installing the agent on a Linux host
+
+From `deploy/`, beside a `host-agent` binary built for that machine:
+
+```bash
+sudo ./install.sh 192.168.1.20
+```
+
+The argument is the machine running the panel. That address is the **only** one allowed to reach the
+agent (`IPAddressDeny=any` in the unit), and the agent listens on whichever local address routes to
+it — not `0.0.0.0`, because a guest running on the same hypervisor must not be able to reach
+something that can type at a root console.
+
+It creates an unprivileged `hublot` user in groups `tty` and `input`, installs a udev rule so
+`/dev/uinput` is writable without root, installs a hardened systemd unit, and prints the pairing
+fingerprint and token to paste into the panel. `uninstall.sh` undoes it; `--purge` also removes the
+identity, which un-pairs every panel.
 
 ## Two machines at once
 

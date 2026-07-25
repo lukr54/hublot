@@ -14,11 +14,11 @@
 mod uinput;
 mod vcs;
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
-use protocol::{Auth, ClientMsg, ServerMsg, ALPN, PROTOCOL_VERSION};
+use agent_core::Identity;
+use anyhow::{Context, Result};
+use protocol::{ClientMsg, ServerMsg};
 use tokio::sync::broadcast;
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:7842";
@@ -27,85 +27,6 @@ fn state_dir() -> std::path::PathBuf {
     std::env::var("HUBLOT_STATE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from("/var/lib/hublot"))
-}
-
-struct Identity {
-    cert: Vec<u8>,
-    key: Vec<u8>,
-    token: String,
-    fingerprint: [u8; 32],
-    /// Client certificate fingerprints permitted to connect.
-    allowed: Mutex<HashSet<String>>,
-}
-
-impl Identity {
-    fn allowlist_path() -> std::path::PathBuf {
-        state_dir().join("clients")
-    }
-
-    fn load_or_create() -> Result<Self> {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = state_dir();
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let (cert_path, key_path, token_path) =
-            (dir.join("cert.der"), dir.join("key.der"), dir.join("token"));
-
-        if !cert_path.exists() {
-            let ck = rcgen::generate_simple_self_signed(vec!["hublot-agent".to_string()])
-                .context("generating certificate")?;
-            std::fs::write(&cert_path, ck.cert.der())?;
-            std::fs::write(&key_path, ck.key_pair.serialize_der())?;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
-        }
-        if !token_path.exists() {
-            // Exactly 32 bytes — /dev/urandom never returns EOF, so read-to-end would never stop.
-            use std::io::{Read, Write};
-            let mut raw = [0u8; 32];
-            std::fs::File::open("/dev/urandom")
-                .context("opening /dev/urandom")?
-                .read_exact(&mut raw)
-                .context("reading /dev/urandom")?;
-            let mut f = std::fs::File::create(&token_path)?;
-            writeln!(f, "{}", raw.iter().map(|b| format!("{b:02x}")).collect::<String>())?;
-            std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))?;
-        }
-
-        let cert = std::fs::read(&cert_path)?;
-        let key = std::fs::read(&key_path)?;
-        let token = std::fs::read_to_string(&token_path)?.trim().to_string();
-        if token.len() < 32 {
-            bail!("token in {} looks too short to be the generated one", token_path.display());
-        }
-        let allowed = std::fs::read_to_string(Self::allowlist_path())
-            .map(|s| s.lines().map(|l| l.trim().to_uppercase()).filter(|l| !l.is_empty()).collect())
-            .unwrap_or_default();
-
-        Ok(Self {
-            fingerprint: protocol::pin::fingerprint_of(&cert),
-            cert,
-            key,
-            token,
-            allowed: Mutex::new(allowed),
-        })
-    }
-
-    fn is_allowed(&self, fp: &str) -> bool {
-        self.allowed.lock().unwrap().contains(&fp.to_uppercase())
-    }
-
-    fn enrol(&self, fp: &str) -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        let mut set = self.allowed.lock().unwrap();
-        set.insert(fp.to_uppercase());
-        let body = set.iter().cloned().collect::<Vec<_>>().join("\n");
-        std::fs::write(Self::allowlist_path(), format!("{body}\n"))?;
-        std::fs::set_permissions(Self::allowlist_path(), std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
-    }
-
-    fn has_enrolled_clients(&self) -> bool {
-        !self.allowed.lock().unwrap().is_empty()
-    }
 }
 
 fn watcher(tx: broadcast::Sender<protocol::Screen>) -> Result<()> {
@@ -127,23 +48,6 @@ fn watcher(tx: broadcast::Sender<protocol::Screen>) -> Result<()> {
             previous = Some(screen);
         }
     }
-}
-
-/// Compare without an early return on the first differing byte.
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-/// The fingerprint of the certificate the peer proved it holds the key for.
-fn peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
-    let identity = conn.peer_identity()?;
-    let chain = identity.downcast::<Vec<rustls::pki_types::CertificateDer>>().ok()?;
-    let leaf = chain.first()?;
-    Some(protocol::pin::hex(&protocol::pin::fingerprint_of(leaf)))
 }
 
 /// Read keys from the panel and press them. Owns the virtual keyboard: when this future is
@@ -213,48 +117,11 @@ async fn serve_connection(
     tx: broadcast::Sender<protocol::Screen>,
 ) -> Result<()> {
     let conn = incoming.await.context("handshake")?;
-    let peer = conn.remote_address();
-    let fingerprint = peer_fingerprint(&conn).context("client presented no certificate")?;
     let (mut send, mut recv) = conn.accept_bi().await.context("accepting stream")?;
-
-    let hello: ClientMsg = protocol::read_msg(&mut recv).await?;
-    let ClientMsg::Hello { version, auth } = hello else {
-        bail!("{peer}: first message was not Hello");
-    };
-    if version != PROTOCOL_VERSION {
-        let _ = protocol::write_msg(
-            &mut send,
-            &ServerMsg::Error(format!("protocol {version} unsupported, want {PROTOCOL_VERSION}")),
-        )
-        .await;
-        bail!("{peer}: protocol mismatch");
-    }
-
-    match auth {
-        Auth::Certificate if id.is_allowed(&fingerprint) => {}
-        Auth::Certificate => {
-            let _ = protocol::write_msg(&mut send, &ServerMsg::Error("certificate not enrolled".into())).await;
-            bail!("{peer}: unenrolled certificate {fingerprint}");
-        }
-        Auth::Enrol { token } => {
-            if !pairing_open {
-                let _ = protocol::write_msg(
-                    &mut send,
-                    &ServerMsg::Error("pairing is closed; restart the agent with --pair".into()),
-                )
-                .await;
-                bail!("{peer}: enrolment attempted while pairing closed");
-            }
-            if !constant_time_eq(&token, &id.token) {
-                let _ = protocol::write_msg(&mut send, &ServerMsg::Error("bad token".into())).await;
-                bail!("{peer}: enrolment rejected — bad token");
-            }
-            id.enrol(&fingerprint)?;
-            eprintln!("[hublot] enrolled client {fingerprint}");
-            protocol::write_msg(&mut send, &ServerMsg::Enrolled).await?;
-        }
-    }
-    eprintln!("[hublot] {peer} authenticated as {fingerprint}");
+    // Who is allowed in is `agent-core`'s decision, identically for both agents. This file used to
+    // carry its own copy of it, which is exactly how two copies of a security rule drift apart —
+    // and they had: the audit log and the pre-authentication size cap only ever existed over there.
+    agent_core::authenticate(&conn, &mut send, &mut recv, &id, pairing_open).await?;
 
     // Injection is optional: an agent that cannot open /dev/uinput still mirrors perfectly well,
     // and saying so beats swallowing keystrokes in silence.
@@ -347,7 +214,7 @@ async fn stream_screens(
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let id = Arc::new(Identity::load_or_create()?);
+    let id = Arc::new(Identity::load_or_create(state_dir())?);
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--pairing") {
@@ -365,22 +232,8 @@ async fn main() -> Result<()> {
         .parse()
         .context("HUBLOT_LISTEN")?;
 
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut tls = rustls::ServerConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-        .context("tls versions")?
-        .with_client_cert_verifier(Arc::new(pinning::AcceptAnyClientCert::new(provider)))
-        .with_single_cert(
-            vec![rustls::pki_types::CertificateDer::from(id.cert.clone())],
-            rustls::pki_types::PrivatePkcs8KeyDer::from(id.key.clone()).into(),
-        )
-        .context("server tls config")?;
-    tls.alpn_protocols = vec![ALPN.to_vec()];
-
-    let server_config = quinn::ServerConfig::with_crypto(Arc::new(
-        quinn::crypto::rustls::QuicServerConfig::try_from(tls).context("quic tls")?,
-    ));
-    let endpoint = quinn::Endpoint::server(server_config, listen).context("binding endpoint")?;
+    let endpoint = quinn::Endpoint::server(agent_core::server_config(&id)?, listen)
+        .context("binding endpoint")?;
 
     let (tx, _) = broadcast::channel(8);
     {

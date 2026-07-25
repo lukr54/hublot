@@ -1,0 +1,30 @@
+[package]
+name = "hublot-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Its own workspace: the fuzz targets need nightly and a sanitizer, and dragging that requirement
+# into the main workspace would make an ordinary `cargo build` need a nightly toolchain.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+protocol = { path = "../crates/protocol" }
+
+[[bin]]
+name = "client_msg"
+path = "fuzz_targets/client_msg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_msg"
+path = "fuzz_targets/server_msg.rs"
+test = false
+doc = false
+bench = false

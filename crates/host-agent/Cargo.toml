@@ -10,10 +10,9 @@ publish.workspace = true
 # (THREAT-MODEL.md §5). The console reader itself is plain libc.
 [dependencies]
 protocol = { path = "../protocol" }
-pinning = { path = "../pinning" }
+agent-core = { path = "../agent-core" }
 anyhow.workspace = true
 tokio.workspace = true
 rustls.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-rcgen = "0.13"
 libc = "0.2"

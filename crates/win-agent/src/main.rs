@@ -158,6 +158,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+// Everything here is per-connection state that has to come from somewhere; bundling it into a
+// struct to satisfy an argument count would add a type whose only purpose is the count.
+#[allow(clippy::too_many_arguments)]
 #[cfg(windows)]
 async fn serve(
     incoming: quinn::Incoming,

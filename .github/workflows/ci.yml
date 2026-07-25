@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The advisory database moves without us touching anything, so the security job also runs on a
+  # timer. A vulnerable dependency in the process that can type at a root console is worth hearing
+  # about on a Monday rather than at the next commit.
+  schedule:
+    - cron: "0 6 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: windows (panel + win-agent)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  linux:
+    name: linux (host-agent)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The Linux crates are not in the Windows workspace and vice versa — see Cargo-linux.toml.
+      # This job exists because adding a protocol message on Windows silently breaks host-agent's
+      # match and nothing over there says so.
+      - run: cp Cargo-linux.toml Cargo.toml
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  deny:
+    name: advisories + licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Both halves, each against the platform it actually ships to. Without `--target` the Windows
+      # workspace drags in Tauri's whole GTK/WebKit tree, which this project never compiles and
+      # would fail on advisories nobody here can act on.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: --target x86_64-pc-windows-msvc check advisories bans licenses sources
+      - run: cp Cargo-linux.toml Cargo.toml
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: --target x86_64-unknown-linux-gnu check advisories bans licenses sources
+
+  fuzz:
+    name: fuzz (smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz
+      # One minute each, on every push: enough to catch a parser change that broke outright, not a
+      # substitute for the long runs done by hand. The corpus is not checked in, so this always
+      # starts cold.
+      - run: cargo fuzz run client_msg -- -rss_limit_mb=512 -max_total_time=60
+        working-directory: fuzz
+      - run: cargo fuzz run server_msg -- -rss_limit_mb=512 -max_total_time=60
+        working-directory: fuzz

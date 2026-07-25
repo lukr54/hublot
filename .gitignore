@@ -12,3 +12,12 @@ clients
 
 # Node is only used to vendor xterm; the vendored files themselves are committed.
 node_modules/
+
+# Fuzzing state. The corpus is machine-specific and regenerates in seconds; artifacts are crash
+# inputs, which belong in a test the moment one appears rather than in a directory nobody reads.
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+# Audit logs, wherever a state directory ends up beside the source.
+audit.log
+audit.log.1

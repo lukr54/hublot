@@ -1,0 +1,76 @@
+[Unit]
+Description=Hublot agent — mirrors this machine's text console and injects keys
+Documentation=https://github.com/lukr54/hublot
+# The console devices exist from early boot; nothing else is needed.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/host-agent
+Restart=on-failure
+RestartSec=2
+
+# ── who it runs as ──────────────────────────────────────────────────────────
+# Not root. `tty` is enough to read /dev/vcs* and write /dev/tty0 (VT_ACTIVATE, KDGKBMODE);
+# `input` is enough to write /dev/uinput given the udev rule shipped alongside this file.
+User=hublot
+Group=hublot
+SupplementaryGroups=tty input
+
+# Its identity — certificate, key, pairing token, enrolled clients. Generated on first start as
+# this user, so the token is never readable by anyone else. 0700.
+StateDirectory=hublot
+StateDirectoryMode=0700
+Environment=HUBLOT_STATE=/var/lib/hublot
+
+# ── where it listens ────────────────────────────────────────────────────────
+# Set by install.sh to the management address, NOT 0.0.0.0. An agent that can type at a root
+# console should not be reachable from the VM networks running on this same host — a compromised
+# guest is a LAN-local attacker with a direct line to it (THREAT-MODEL §5).
+Environment=HUBLOT_LISTEN=0.0.0.0:7842
+
+# ── hardening ───────────────────────────────────────────────────────────────
+# This process parses attacker-reachable bytes and can synthesise keystrokes on a root console.
+# Everything below is about what an exploited agent could go on to do.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateUsers=no
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_INET AF_INET6
+UMask=0077
+
+# Exactly the devices it needs, and nothing else. char-vcs covers vcs/vcsa/vcsu (major 7);
+# /dev/tty0 is the current VT, used for VT_ACTIVATE and for asking whether the keyboard is
+# even enabled (DECISIONS.md D13). DevicePolicy=closed still permits /dev/urandom and friends.
+DevicePolicy=closed
+DeviceAllow=char-vcs rw
+DeviceAllow=/dev/tty0 rw
+DeviceAllow=/dev/uinput rw
+
+# The panel is the only thing that should ever reach it. install.sh rewrites the allow line with
+# the address you give it; this is a second lock beside the host firewall, not a replacement for
+# one, and it is enforced by the kernel rather than by the agent trusting itself.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

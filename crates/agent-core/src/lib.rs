@@ -6,6 +6,8 @@
 //! allowed to ask. Writing that agreement twice is how two copies of a security decision start
 //! disagreeing — the same reasoning that put certificate pinning in its own crate.
 
+pub mod audit;
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -72,6 +74,11 @@ impl Identity {
 
     pub fn has_enrolled_clients(&self) -> bool {
         !self.allowed.lock().unwrap().is_empty()
+    }
+
+    /// Note something that happened, beside the identity it happened to.
+    pub fn audit(&self, event: &str) {
+        audit::record(&self.dir, event);
     }
 
     pub fn enrol(&self, fp: &str) -> Result<()> {
@@ -152,9 +159,17 @@ pub async fn authenticate(
     pairing_open: bool,
 ) -> Result<String> {
     let peer = conn.remote_address();
-    let fingerprint = peer_fingerprint(conn).context("client presented no certificate")?;
+    let Some(fingerprint) = peer_fingerprint(conn) else {
+        id.audit(&format!("{peer} REFUSED no client certificate"));
+        bail!("{peer}: client presented no certificate");
+    };
 
-    let ClientMsg::Hello { version, auth } = protocol::read_msg(recv).await? else {
+    // Capped hard: at this point the peer is anyone who can complete a TLS handshake, because
+    // enrolment must accept a certificate we have never seen. See `read_msg_capped`.
+    let ClientMsg::Hello { version, auth } =
+        protocol::read_msg_capped(recv, protocol::MAX_HELLO).await?
+    else {
+        id.audit(&format!("{peer} {fingerprint} REFUSED first message was not Hello"));
         bail!("{peer}: first message was not Hello");
     };
     if version != PROTOCOL_VERSION {
@@ -163,6 +178,7 @@ pub async fn authenticate(
             &ServerMsg::Error(format!("protocol {version} unsupported, want {PROTOCOL_VERSION}")),
         )
         .await;
+        id.audit(&format!("{peer} {fingerprint} REFUSED protocol {version}"));
         bail!("{peer}: protocol mismatch");
     }
 
@@ -171,6 +187,7 @@ pub async fn authenticate(
         Auth::Certificate => {
             let _ =
                 protocol::write_msg(send, &ServerMsg::Error("certificate not enrolled".into())).await;
+            id.audit(&format!("{peer} {fingerprint} REFUSED unenrolled certificate"));
             bail!("{peer}: unenrolled certificate {fingerprint}");
         }
         Auth::Enrol { token } => {
@@ -180,17 +197,21 @@ pub async fn authenticate(
                     &ServerMsg::Error("pairing is closed; restart the agent with --pair".into()),
                 )
                 .await;
+                id.audit(&format!("{peer} {fingerprint} REFUSED enrolment while pairing closed"));
                 bail!("{peer}: enrolment attempted while pairing closed");
             }
             if !constant_time_eq(&token, &id.token) {
                 let _ = protocol::write_msg(send, &ServerMsg::Error("bad token".into())).await;
+                // The token itself is never logged, right or wrong: a near-miss in a log file is a
+                // gift to whoever reads the log.
+                id.audit(&format!("{peer} {fingerprint} REFUSED bad pairing token"));
                 bail!("{peer}: enrolment rejected — bad token");
             }
             id.enrol(&fingerprint)?;
-            eprintln!("[hublot] enrolled client {fingerprint}");
+            id.audit(&format!("{peer} {fingerprint} ENROLLED"));
             protocol::write_msg(send, &ServerMsg::Enrolled).await?;
         }
     }
-    eprintln!("[hublot] {peer} authenticated as {fingerprint}");
+    id.audit(&format!("{peer} {fingerprint} ACCEPTED"));
     Ok(fingerprint)
 }

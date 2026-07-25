@@ -108,15 +108,39 @@ Controls:
 5. **Secrets never touch logs.**
 
 ## v1 security checklist (must-do, not later)
-- [ ] TLS 1.3 / QUIC, no plaintext path.
-- [ ] Mutual auth with pinned identities; PAKE pairing; explicit time-boxed pairing window; no default creds.
-- [ ] Reliable key up/down + `ReleaseAll` on disconnect/lock/focus-loss.
-- [ ] Clear active-node indicator; deliberate (non-twitchy) flip; no silent auto-flip to Proxmox.
-- [ ] Proxmox agent: unprivileged user + udev rule + hardened systemd unit + firewalled to the source IP, blocked from VM nets.
-- [ ] Clipboard: honor sensitivity markers, size cap, format allowlist, no sync to Proxmox.
-- [ ] File drop: path sanitization, quarantine dir with tight ACLs, size quotas, no auto-execute.
-- [ ] Windows app runs in user session (not SYSTEM); does not drive elevated/secure-desktop UI; keys sealed with DPAPI.
-- [ ] Input/clipboard/file **content never logged**; parser fuzzed; `cargo audit`/`cargo deny` in CI.
+
+**Status as of 2026-07-25.** An unticked box that has quietly been done for weeks teaches you to stop
+reading the list, so this is kept honest even where the honest answer is "no".
+
+- [x] TLS 1.3 / QUIC, no plaintext path.
+- [x] Mutual auth with pinned identities; explicit pairing window; no default creds. **PAKE was
+      deliberately dropped** — it protects low-entropy PINs and the token is 32 random bytes (D12).
+      Pairing is open only on `--pair` or while nobody is enrolled, and the token authorises
+      enrolment once, never a session. *Time-boxing the window is still not implemented.*
+- [x] Reliable key up/down + `ReleaseAll` on disconnect/lock/focus-loss — and on pane switching,
+      which the split view added (D15). On Linux the kernel releases a dying uinput device's keys
+      as a backstop; on Windows `Injector::drop` does it by hand.
+- [x] Clear active-node indicator; no silent auto-flip. The focused pane is outlined and is the only
+      one that can receive a keystroke; the others are inert, not merely unfocused.
+- [x] Proxmox agent: unprivileged user + udev rule + hardened systemd unit + restricted to the
+      panel's address (`IPAddressDeny=any`), listening on the management address rather than
+      `0.0.0.0` so guests on the same host cannot reach it. Shipped in `deploy/`.
+      **⚠️ Not yet run against the real host** — the agent has only ever run on the VM.
+- [x] Clipboard: honours sensitivity markers, 256 KB cap, text only (so the formats needing
+      sanitisation are never carried), never synced to the console leg. **No off switch** — a
+      deliberate trade, see R10 and D14.
+- [ ] File drop — not built, so nothing to check yet.
+- [x] Windows app runs in the user session (not SYSTEM) — it must, since session 0 has no desktop to
+      duplicate; does not drive elevated or secure-desktop UI; Proxmox password and pairing tokens
+      sealed by DPAPI via the Credential Manager.
+- [x] Input/clipboard/file **content never logged.** The console agent counts keystrokes and never
+      records which; the audit log holds addresses, fingerprints and outcomes only, and a rejected
+      pairing token is never written down even when it was wrong.
+- [x] Parser fuzzed — `fuzz/`, ~424M executions across both message types with no crash and no
+      unbounded allocation (2026-07-25). It found nothing; *thinking about what it could not see*
+      found the pre-authentication allocation, now capped at `MAX_HELLO`.
+- [x] `cargo deny` (advisories, bans, licences, sources) and clippy `-D warnings` in CI, on both
+      platforms, plus a one-minute fuzz smoke run per push and a weekly advisory sweep.
 
 ---
 
@@ -164,11 +188,16 @@ unmistakable, always-visible frame/badge when it is live, and losing window focu
 `ReleaseAll` immediately.
 
 ## R5. Additions to the v1 checklist
-- [ ] Agent user in `tty` + `input` only; per-device `DeviceAllow` for the exact VTs mirrored.
-- [ ] Screen stream encrypted + authenticated on the same connection as input; VT contents never logged.
-- [ ] PVE credential sealed with DPAPI; scoped token preferred over a password; PVE CA cert pinned.
-- [ ] Webview never sees credentials, tickets, or CSRF tokens.
-- [ ] Panel loses window focus → `ReleaseAll`; live-console badge always visible while mirroring.
+- [x] Agent user in `tty` + `input` only; `DeviceAllow` limited to `char-vcs`, `/dev/tty0` and
+      `/dev/uinput` with `DevicePolicy=closed`. Per-*VT* granularity is not possible — the agent
+      follows whichever console is active, so it needs the class.
+- [x] Screen stream encrypted + authenticated on the same connection as input; VT contents never
+      logged.
+- [x] PVE credential sealed with DPAPI. A scoped token is **not** preferred after all — PVE rejects
+      token principals on console endpoints (D1), so a real password is the only option. CA pinned.
+- [x] Webview never sees credentials, tickets, or CSRF tokens.
+- [x] Panel loses window focus → `ReleaseAll`; the input badge is in every pane's header, always
+      visible while mirroring.
 
 ---
 

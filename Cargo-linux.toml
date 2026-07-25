@@ -16,13 +16,13 @@ resolver = "2"
 members = [
     "crates/pinning",
     "crates/protocol",
+    "crates/agent-core",
     "crates/host-agent",
     "crates/spike-console",
 ]
 # Windows-only; built there, not here.
 exclude = [
     "crates/winclip",
-    "crates/agent-core",
     "crates/win-agent",
     "crates/pve",
     "crates/mirror",

@@ -48,7 +48,7 @@ fn open() -> bool {
 
 pub fn get_text(max_len: usize) -> Option<String> {
     unsafe {
-        if !IsClipboardFormatAvailable(CF_UNICODETEXT).is_ok() {
+        if IsClipboardFormatAvailable(CF_UNICODETEXT).is_err() {
             return None;
         }
         if should_ignore() {

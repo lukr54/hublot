@@ -1,0 +1,7 @@
+# /dev/uinput is root:root 0660 by default, which would force the agent to run as root for the one
+# thing it needs a privilege for. Handing it to the `input` group instead is what makes an
+# unprivileged agent possible at all (THREAT-MODEL §5, least privilege).
+#
+# This widens uinput to every member of `input` — on a hypervisor that should be the agent and
+# nobody else. Check with: getent group input
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
