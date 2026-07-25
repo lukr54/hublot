@@ -37,6 +37,33 @@ crates/spike-console/  Phase 0b — proves the mirror + injection (Linux-only; b
 | [DECISIONS.md](DECISIONS.md) | why each choice, with evidence and rejected alternatives |
 | [THREAT-MODEL.md](THREAT-MODEL.md) | assets, adversaries, and the things that make this dangerous |
 
+## Installing
+
+```bash
+cargo tauri build
+```
+
+produces `target/release/bundle/nsis/hublot_<version>_x64-setup.exe`, a per-user installer needing
+no administrator rights. **`win-agent.exe` is bundled inside it**, so installing the panel also
+places the Windows desktop agent alongside it.
+
+On a machine you want to *mirror*, copy `win-agent.exe` there and run:
+
+```bash
+win-agent.exe --pairing
+```
+
+to print its fingerprint and pairing token, then `--pair` to accept one enrolment, and
+`--install` to start it automatically at logon (`--uninstall`, `--status` do the obvious).
+
+**It is a logon task, not a service, and that is deliberate.** Services run in session 0, which has
+no desktop — `DuplicateOutput` there has nothing to duplicate. Capture tools that appear to run as
+services actually run a session-0 stub whose only job is to launch a helper into the logged-in
+session; a logon task reaches the same place directly.
+
+> Run `--install` from your own terminal. Task and registry changes made from a sandboxed shell can
+> be virtualised away and silently fail to take effect.
+
 ## Running the Phase 0 spikes
 
 Neither spike writes anything to disk, and neither touches the Proxmox host's configuration.
