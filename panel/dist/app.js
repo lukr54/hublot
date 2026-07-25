@@ -718,6 +718,8 @@ const sh = {
   install: document.getElementById("sh-install"),
   msg: document.getElementById("sh-msg"),
   addrBox: document.getElementById("sh-addr-box"),
+  displayBox: document.getElementById("sh-display-box"),
+  display: document.getElementById("sh-display"),
   address: document.getElementById("sh-address"),
   detail: document.getElementById("sh-detail"),
 };
@@ -757,6 +759,21 @@ async function refreshShare() {
     })
   );
 
+  // Only worth showing once there is a choice to make; one display is not a decision.
+  const screens = await invoke("share_displays").catch(() => []);
+  sh.displayBox.hidden = screens.length < 2;
+  if (screens.length > 1) {
+    sh.display.replaceChildren(
+      ...screens.map(([name, chosen]) => {
+        const o = document.createElement("option");
+        o.value = name;
+        o.textContent = name;
+        o.selected = chosen;
+        return o;
+      })
+    );
+  }
+
   const bits = [];
   bits.push(st.installed ? "starts automatically at logon" : "does NOT start at logon yet");
   // Without the rule the agent runs and nothing can reach it, which looks exactly like a broken
@@ -764,6 +781,17 @@ async function refreshShare() {
   bits.push(st.firewall ? "allowed through the firewall" : "NOT allowed through the firewall — nothing will connect");
   sh.detail.textContent = bits.join(" · ");
 }
+
+sh.display.addEventListener("change", async () => {
+  sh.msg.textContent = "switching…";
+  try {
+    await invoke("share_use_display", { name: sh.display.value });
+    // The agent re-reads the choice within a second, so there is nothing to restart.
+    sh.msg.textContent = `now sharing ${sh.display.value}`;
+  } catch (err) {
+    sh.msg.textContent = String(err);
+  }
+});
 
 sh.start.addEventListener("click", async () => {
   sh.msg.textContent = "starting…";

@@ -89,6 +89,40 @@ pub fn status(app: &AppHandle, port: u16) -> ShareStatus {
     st
 }
 
+/// The displays the agent can see, and which one it is set to mirror.
+///
+/// Asked of the agent rather than enumerated here, even though the panel runs on the same machine:
+/// the agent is the thing that has to open the display, and two enumerations can disagree about
+/// what exists — which is exactly the kind of difference nobody would think to look for.
+pub fn displays(app: &AppHandle) -> Vec<(String, bool)> {
+    let Some(path) = agent_path(app) else { return Vec::new() };
+    let Ok(out) = std::process::Command::new(&path).arg("--displays").output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let chosen = line.starts_with('*');
+            let text = line.get(1..)?.trim();
+            (!text.is_empty()).then(|| (text.to_string(), chosen))
+        })
+        .collect()
+}
+
+/// Tell the agent which display to mirror. A running agent notices within a second.
+pub fn use_display(app: &AppHandle, name: &str) -> Result<(), String> {
+    let path = agent_path(app).ok_or("win-agent.exe is not next to the panel")?;
+    let out = std::process::Command::new(&path)
+        .args(["--use-display", name])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 /// Start the agent now, without waiting for a logon.
 pub fn start(app: &AppHandle, port: u16) -> Result<(), String> {
     if port_taken(port) {

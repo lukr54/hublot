@@ -27,8 +27,12 @@ pub struct Capture {
     pointer: crate::pointer::Pointer,
     pub width: u32,
     pub height: u32,
-    /// Which display this is, so it can be acquired again after Windows takes it away.
+    /// Which output index this ended up on. Not used to reacquire — displays renumber, which is
+    /// why `for_display` works from the name instead — but worth keeping for diagnostics.
+    #[allow(dead_code)]
     pub output: u32,
+    /// Its stable name, e.g. `\.\DISPLAY3`.
+    pub name: String,
 }
 
 /// What one capture wake-up produced: possibly a changed region, possibly pointer news, possibly
@@ -55,7 +59,73 @@ pub struct Tile {
     pub data: Vec<u8>,
 }
 
+/// One display Windows currently has, as the agent sees it.
+pub struct DisplayInfo {
+    pub index: u32,
+    /// `\\.\DISPLAY3` — **the stable way to name a display**, and the reason selections are stored
+    /// by name rather than by index. Indices renumber whenever a monitor comes or goes, which is
+    /// exactly the situation a virtual display exists to survive.
+    pub name: String,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// Everything attached right now, in DXGI's order.
+pub fn displays() -> Result<Vec<DisplayInfo>> {
+    unsafe {
+        let mut device = None;
+        D3D11CreateDevice(
+            None,
+            D3D_DRIVER_TYPE_HARDWARE,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            Some(&[D3D_FEATURE_LEVEL_11_0]),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            None,
+        )
+        .context("creating D3D11 device")?;
+        let device: ID3D11Device = device.context("no device")?;
+        let adapter: IDXGIAdapter = device.cast::<IDXGIDevice>()?.GetAdapter()?;
+
+        let mut out = Vec::new();
+        let mut i = 0u32;
+        while let Ok(output) = adapter.EnumOutputs(i) {
+            if let Ok(desc) = output.GetDesc() {
+                let name = String::from_utf16_lossy(&desc.DeviceName)
+                    .trim_end_matches('\0')
+                    .to_string();
+                out.push(DisplayInfo {
+                    index: i,
+                    name,
+                    w: (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left) as u32,
+                    h: (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top) as u32,
+                });
+            }
+            i += 1;
+        }
+        Ok(out)
+    }
+}
+
 impl Capture {
+    /// Open a display by name, falling back to the first one that exists.
+    ///
+    /// The fallback is not laziness: a named display can genuinely be gone — a virtual display
+    /// whose driver has not loaded yet at logon, or a monitor that was unplugged — and showing the
+    /// wrong screen beats showing none while someone works out why.
+    pub fn for_display(want: Option<&str>) -> Result<Self> {
+        let all = displays().unwrap_or_default();
+        let index = want
+            .and_then(|w| all.iter().find(|d| d.name.eq_ignore_ascii_case(w)))
+            .map(|d| d.index)
+            .unwrap_or(0);
+        let mut cap = Self::new(index)?;
+        cap.name = all.iter().find(|d| d.index == index).map(|d| d.name.clone()).unwrap_or_default();
+        Ok(cap)
+    }
+
     pub fn new(output_index: u32) -> Result<Self> {
         unsafe {
             let mut device = None;
@@ -116,6 +186,7 @@ impl Capture {
                 width,
                 height,
                 output: output_index,
+                name: String::new(),
             })
         }
     }

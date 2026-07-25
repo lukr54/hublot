@@ -758,6 +758,17 @@ fn share_status(app: AppHandle) -> share::ShareStatus {
     share::status(&app, SHARE_PORT)
 }
 
+/// `[(name, is_the_chosen_one)]` — the displays this machine can share.
+#[tauri::command]
+fn share_displays(app: AppHandle) -> Vec<(String, bool)> {
+    share::displays(&app)
+}
+
+#[tauri::command]
+fn share_use_display(app: AppHandle, name: String) -> Result<(), String> {
+    share::use_display(&app, name.trim())
+}
+
 #[tauri::command]
 fn share_start(app: AppHandle) -> Result<(), String> {
     share::start(&app, SHARE_PORT)
@@ -877,6 +888,8 @@ fn main() {
             forget_pve_credential,
             set_visible,
             share_status,
+            share_displays,
+            share_use_display,
             share_start,
             share_install,
         ])

@@ -155,6 +155,20 @@ and nothing else.
 Linux and Proxmox consoles pair the older way — they have no screen to ask on, so they print a
 token instead. See *Installing the agent on a Linux host* above.
 
+## Sharing a PC whose monitor is pointed elsewhere
+
+Switching a monitor's input away from a machine usually makes Windows *remove* the display — most
+DP and HDMI monitors drop hot-plug detect — and with no display attached there is nothing for
+Desktop Duplication to capture. The mirror goes black and says so.
+
+The fix is to give that machine a display it never loses: a **dummy plug**, or a **virtual display
+driver** (Parsec's VDD, or the one Sunshine installs). Then pick it under **share this PC → which
+screen to share**. The choice is stored by display *name*, not index, because indices renumber
+every time a monitor comes or goes — which is exactly what a virtual display exists to survive.
+
+From a terminal the same thing is `win-agent --displays` and `win-agent --use-display "\.\DISPLAY3"`.
+A running agent picks up a change within a second; there is nothing to restart.
+
 ## Two machines at once
 
 Every configured machine is a chip in the mirror toolbar. Click one to put it on screen, click it

@@ -68,6 +68,18 @@ async fn main() -> anyhow::Result<()> {
         args.get(i + 1).map(|s| s.as_str()).filter(|s| !s.starts_with("--"))
     }
 
+    if args.iter().any(|a| a == "--displays") {
+        for d in capture::displays()? {
+            let mark = if Some(d.name.as_str()) == chosen_display(&state_dir).as_deref() { "*" } else { " " };
+            println!("{mark} {} {}x{}", d.name, d.w, d.h);
+        }
+        return Ok(());
+    }
+    if let Some(name) = value_of(&args, "--use-display") {
+        std::fs::write(std::path::Path::new(&state_dir).join("display"), name)?;
+        println!("Now mirroring {name}. A running agent picks this up within a second.");
+        return Ok(());
+    }
     if args.iter().any(|a| a == "--install") {
         return autostart::install(value_of(&args, "--allow"), listen.port());
     }
@@ -92,8 +104,10 @@ async fn main() -> anyhow::Result<()> {
     let (refresh_tx, refresh_rx) = std::sync::mpsc::channel::<()>();
     {
         let tx = tx.clone();
+        let state_for_capture = state_dir.clone();
         std::thread::Builder::new().name("capture".into()).spawn(move || {
-            let mut cap = acquire(0, &tx);
+            let mut want = chosen_display(&state_for_capture);
+            let mut cap = acquire(want.as_deref(), &tx);
             let _ = info_tx.send((cap.width as u16, cap.height as u16));
             eprintln!("[hublot] capturing {}x{}", cap.width, cap.height);
             loop {
@@ -106,6 +120,22 @@ async fn main() -> anyhow::Result<()> {
                             let _ = tx.send(std::sync::Arc::new(capture::Update::Tile(t)));
                         }
                         Err(e) => eprintln!("[hublot] full frame failed: {e:#}"),
+                    }
+                }
+                // Re-read the choice rather than requiring a restart: the picker in the panel
+                // writes this file, and waiting for a logon to take effect would make the setting
+                // feel broken.
+                let now = chosen_display(&state_for_capture);
+                if now != want {
+                    want = now;
+                    eprintln!("[hublot] switching to display {:?}", want.as_deref().unwrap_or("(first)"));
+                    cap = acquire(want.as_deref(), &tx);
+                    let _ = tx.send(Arc::new(capture::Update::Geometry {
+                        w: cap.width as u16,
+                        h: cap.height as u16,
+                    }));
+                    if let Ok(t) = cap.full() {
+                        let _ = tx.send(Arc::new(capture::Update::Tile(t)));
                     }
                 }
                 match cap.next_change(500) {
@@ -123,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => {
                         eprintln!("[hublot] lost the desktop ({e:#}) — reacquiring");
                         let (was_w, was_h) = (cap.width, cap.height);
-                        cap = acquire(cap.output, &tx);
+                        cap = acquire(want.as_deref(), &tx);
                         if (cap.width, cap.height) != (was_w, was_h) {
                             eprintln!("[hublot] desktop is now {}x{}", cap.width, cap.height);
                             let _ = tx.send(Arc::new(capture::Update::Geometry {
@@ -195,6 +225,21 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Which display the agent has been told to mirror, by name.
+///
+/// Stored beside the agent's identity rather than passed as a flag, because the logon task's
+/// command line is fixed at install time and the choice has to survive being changed afterwards.
+#[cfg(windows)]
+fn chosen_display(state_dir: &str) -> Option<String> {
+    if let Ok(name) = std::env::var("HUBLOT_DISPLAY") {
+        return Some(name);
+    }
+    std::fs::read_to_string(std::path::Path::new(state_dir).join("display"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Get hold of the desktop, waiting as long as it takes.
 ///
 /// There is no point failing here. The two reasons duplication is unavailable are both temporary:
@@ -207,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
 /// says so once rather than filling the log.
 #[cfg(windows)]
 fn acquire(
-    output: u32,
+    want: Option<&str>,
     tx: &tokio::sync::broadcast::Sender<std::sync::Arc<capture::Update>>,
 ) -> capture::Capture {
     let mut wait = std::time::Duration::from_millis(200);
@@ -216,9 +261,7 @@ fn acquire(
         // Try the display we had, then fall back to whatever exists. Switching a monitor's input
         // can take the display away entirely and bring a different one back, so insisting on the
         // old index is how you wait forever for something that is not coming.
-        let attempt = capture::Capture::new(output)
-            .or_else(|_| capture::Capture::new(0))
-            .or_else(|_| capture::Capture::new(1));
+        let attempt = capture::Capture::for_display(want);
         match attempt {
             Ok(c) => {
                 if complained {

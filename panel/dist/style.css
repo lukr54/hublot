@@ -98,6 +98,11 @@ body { display: flex; flex-direction: column; }
 #share button:hover:not(:disabled) { background: #30363d; }
 #share button:disabled { opacity: 0.5; cursor: default; }
 #share .fine { font-size: 11px; }
+#share select {
+  background: #0b0f14; border: 1px solid var(--edge); border-radius: 6px;
+  color: var(--ink); padding: 5px 8px; font: inherit; font-size: 12px;
+}
+#share select:focus { outline: none; border-color: #388bfd; }
 
 /* The six digits, and this machine's address — both exist to be read across a room, so they get
    the size that implies. */
