@@ -51,7 +51,8 @@
         "displayLanguageSelector": false,
         "languages": [
           "English"
-        ]
+        ],
+        "installerHooks": "installer-hooks.nsh"
       }
     }
   }
