@@ -17,6 +17,9 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 
 pub struct Capture {
+    /// Never read after construction, and not removable: the duplication and the staging texture
+    /// are only valid while the device that made them is alive.
+    #[allow(dead_code)]
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     dup: IDXGIOutputDuplication,

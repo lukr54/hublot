@@ -66,6 +66,10 @@ async fn main() -> anyhow::Result<()> {
     // the user actually copied here.
     let echo_guard: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let (info_tx, info_rx) = std::sync::mpsc::channel::<(u16, u16)>();
+    // A newly attached viewer has nothing on its canvas and the wire only ever carries *changes*,
+    // so on an idle desktop it would stay blank until something happened to move. This asks the
+    // capture thread for one whole frame; it is the only thing that ever grabs the full screen.
+    let (refresh_tx, refresh_rx) = std::sync::mpsc::channel::<()>();
     {
         let tx = tx.clone();
         std::thread::Builder::new().name("capture".into()).spawn(move || {
@@ -79,6 +83,17 @@ async fn main() -> anyhow::Result<()> {
             let _ = info_tx.send((cap.width as u16, cap.height as u16));
             eprintln!("[hublot] capturing {}x{}", cap.width, cap.height);
             loop {
+                // Coalesced deliberately: three viewers attaching at once want the same frame, and
+                // it reaches all of them because the broadcast has no idea who asked.
+                if refresh_rx.try_recv().is_ok() {
+                    while refresh_rx.try_recv().is_ok() {}
+                    match cap.full() {
+                        Ok(t) => {
+                            let _ = tx.send(std::sync::Arc::new(capture::Update::Tile(t)));
+                        }
+                        Err(e) => eprintln!("[hublot] full frame failed: {e:#}"),
+                    }
+                }
                 match cap.next_change(500) {
                     Ok(updates) => {
                         for u in updates {
@@ -131,8 +146,11 @@ async fn main() -> anyhow::Result<()> {
 
     while let Some(incoming) = endpoint.accept().await {
         let (id, tx, echo) = (id.clone(), tx.clone(), echo_guard.clone());
+        let refresh = refresh_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = serve(incoming, id, pairing_open, tx, echo, screen_w, screen_h).await {
+            if let Err(e) =
+                serve(incoming, id, pairing_open, tx, refresh, echo, screen_w, screen_h).await
+            {
                 eprintln!("[hublot] connection ended: {e:#}");
             }
         });
@@ -146,6 +164,7 @@ async fn serve(
     id: std::sync::Arc<agent_core::Identity>,
     pairing_open: bool,
     tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Update>>,
+    refresh: std::sync::mpsc::Sender<()>,
     echo: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     screen_w: u16,
     screen_h: u16,
@@ -167,7 +186,7 @@ async fn serve(
     let input_task =
         tokio::spawn(input_loop(recv, inject::Injector::new(screen_w, screen_h), echo));
 
-    let result = stream_tiles(&mut send, tx).await;
+    let result = stream_tiles(&mut send, tx, refresh).await;
     input_task.abort();
     result
 }
@@ -212,11 +231,15 @@ async fn input_loop(
 async fn stream_tiles(
     send: &mut quinn::SendStream,
     tx: tokio::sync::broadcast::Sender<std::sync::Arc<capture::Update>>,
+    refresh: std::sync::mpsc::Sender<()>,
 ) -> anyhow::Result<()> {
     use protocol::ServerMsg;
     use tokio::sync::broadcast::error::RecvError;
 
+    // Subscribe *before* asking, or the frame we asked for can be broadcast into the gap between
+    // the two and we wait for the desktop to change after all.
     let mut rx = tx.subscribe();
+    let _ = refresh.send(());
     loop {
         let update = match rx.recv().await {
             Ok(u) => u,
