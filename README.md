@@ -79,14 +79,28 @@ produces `target/release/bundle/nsis/hublot_<version>_x64-setup.exe`, a per-user
 no administrator rights. **`win-agent.exe` is bundled inside it**, so installing the panel also
 places the Windows desktop agent alongside it.
 
-On a machine you want to *mirror*, copy `win-agent.exe` there and run:
+On a Windows machine you want to *mirror*, copy `win-agent.exe` there — full instructions in
+[deploy/windows-agent-README.txt](deploy/windows-agent-README.txt), which ships beside it. The short
+version:
 
 ```bash
 win-agent.exe --pairing
 ```
 
-to print its fingerprint and pairing token, then `--pair` to accept one enrolment, and
-`--install` to start it automatically at logon (`--uninstall`, `--status` do the obvious).
+prints its fingerprint and pairing token, and then, **from an administrator terminal**:
+
+```bash
+win-agent.exe --install --allow 192.168.1.20
+```
+
+registers a logon task and opens the firewall for that one address. `--uninstall` and `--status` do
+the obvious; `--pair` re-opens enrolment on an agent that already has a client.
+
+**The firewall rule is not optional and is the step people skip.** QUIC is UDP, Windows blocks
+inbound UDP by default, and without the rule the agent listens perfectly while nothing ever reaches
+it — indistinguishable from a broken agent. It is scoped to the panel's address rather than to a
+network profile on purpose: Windows re-classifies networks as Private or Public by itself, and a
+rule that depends on that classification stops working for reasons that have nothing to do with you.
 
 **It is a logon task, not a service, and that is deliberate.** Services run in session 0, which has
 no desktop — `DuplicateOutput` there has nothing to duplicate. Capture tools that appear to run as

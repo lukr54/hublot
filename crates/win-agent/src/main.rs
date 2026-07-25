@@ -21,6 +21,8 @@ mod capture;
 #[cfg(windows)]
 mod console;
 #[cfg(windows)]
+mod firewall;
+#[cfg(windows)]
 mod inject;
 #[cfg(windows)]
 mod pointer;
@@ -53,8 +55,19 @@ async fn main() -> anyhow::Result<()> {
         println!("token:       {}", id.token);
         return Ok(());
     }
+    let listen: std::net::SocketAddr = std::env::var("HUBLOT_LISTEN")
+        .unwrap_or_else(|_| "0.0.0.0:7843".to_string())
+        .parse()
+        .context("HUBLOT_LISTEN")?;
+
+    /// `--allow 192.168.1.20` — the flag's value is the next argument along.
+    fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        let i = args.iter().position(|a| a == flag)?;
+        args.get(i + 1).map(|s| s.as_str()).filter(|s| !s.starts_with("--"))
+    }
+
     if args.iter().any(|a| a == "--install") {
-        return autostart::install();
+        return autostart::install(value_of(&args, "--allow"), listen.port());
     }
     if args.iter().any(|a| a == "--uninstall") {
         return autostart::uninstall();
@@ -63,11 +76,6 @@ async fn main() -> anyhow::Result<()> {
         return autostart::status();
     }
     let pairing_open = args.iter().any(|a| a == "--pair") || !id.has_enrolled_clients();
-
-    let listen: std::net::SocketAddr = std::env::var("HUBLOT_LISTEN")
-        .unwrap_or_else(|_| "0.0.0.0:7843".to_string())
-        .parse()
-        .context("HUBLOT_LISTEN")?;
 
     // One capture thread owns the DXGI objects and broadcasts encoded tiles. Capture blocks, so it
     // gets an OS thread rather than starving a runtime worker — same shape as the console watcher.

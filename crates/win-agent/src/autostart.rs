@@ -18,7 +18,12 @@ fn exe() -> Result<String> {
     Ok(std::env::current_exe()?.to_string_lossy().into_owned())
 }
 
-pub fn install() -> Result<()> {
+/// `--install [--allow <address>] [--port <n>]`
+///
+/// Two separate things, with two different privilege requirements, which is why the failure of the
+/// second does not undo the first: the logon task is per-user and needs nothing special, the
+/// firewall rule needs an elevated shell.
+pub fn install(allow: Option<&str>, port: u16) -> Result<()> {
     let path = exe()?;
     let out = Command::new("schtasks")
         .args([
@@ -41,6 +46,29 @@ pub fn install() -> Result<()> {
     }
     println!("Installed logon task \"{TASK}\" → {path}");
     println!("It will start at your next sign-in. Remove it with --uninstall.");
+
+    // Without this the agent listens and nothing ever reaches it, which is indistinguishable from a
+    // broken agent — so it is worth being loud about, in both directions.
+    match allow {
+        Some(ip) => match crate::firewall::allow(&path, port, ip) {
+            Ok(()) => {}
+            Err(e) => {
+                println!();
+                println!("!! The firewall rule was NOT created: {e}");
+                println!("   Without it the panel cannot reach this agent.");
+                println!("   Run this from an *administrator* terminal:");
+                println!();
+                println!("   {}", crate::firewall::command_line(&path, port, ip));
+            }
+        },
+        None => {
+            println!();
+            println!("No --allow address given, so no firewall rule was created. Unless one already");
+            println!("exists, the panel will not be able to connect. Re-run as administrator with:");
+            println!();
+            println!("   \"{path}\" --install --allow <the panel PC's address>");
+        }
+    }
     Ok(())
 }
 
@@ -54,6 +82,9 @@ pub fn uninstall() -> Result<()> {
         );
     }
     println!("Removed logon task \"{TASK}\".");
+    // Best effort: leaving a stale allow rule behind for a binary that no longer starts would be a
+    // small hole nobody would think to look for.
+    let _ = crate::firewall::remove();
     Ok(())
 }
 
@@ -64,5 +95,7 @@ pub fn status() -> Result<()> {
     } else {
         println!("Logon task \"{TASK}\" is not installed.");
     }
+    println!();
+    println!("{}", crate::firewall::show());
     Ok(())
 }
