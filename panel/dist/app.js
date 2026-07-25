@@ -123,6 +123,24 @@ function esc(s) {
 
 const BUTTON = { 0: 0, 2: 1, 1: 2 }; // browser order → left / right / middle
 
+/// How wide one monospace character is, per pixel of font size.
+///
+/// The advance width of a monospace font scales linearly with its size, so a single measurement
+/// converts "160 columns" into "this many pixels" at any size. Measured lazily against the font the
+/// grid actually uses, rather than assumed — the fallbacks in that stack are not all the same shape.
+let charRatio = null;
+function advanceRatio(el) {
+  if (charRatio) return charRatio;
+  const probe = document.createElement("span");
+  probe.textContent = "M".repeat(100);
+  probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;font-size:100px";
+  probe.style.fontFamily = getComputedStyle(el).fontFamily;
+  document.body.append(probe);
+  charRatio = probe.getBoundingClientRect().width / 100 / 100;
+  probe.remove();
+  return charRatio;
+}
+
 let targets = []; // every configured machine
 let shown = []; // indices with a pane, in display order
 let focused = null; // the one index keystrokes can reach
@@ -137,6 +155,8 @@ class Pane {
     this.index = index;
     this.inputEnabled = false;
     this.graphical = false;
+    this.cols = 0;
+    this.rows = 0;
     // The desktop is kept twice: once clean, once with the cursor drawn on it. Without the clean
     // copy there is nothing to paint back over the cursor's last position, and it leaves a trail.
     this.desk = document.createElement("canvas");
@@ -207,18 +227,27 @@ class Pane {
   setStatus(state, detail) {
     this.dot.dataset.state = state;
     this.detail.textContent = detail || "";
+    // Both of these truncate rather than wrap, so the full text lives in the tooltip.
+    this.detail.title = detail || "";
     if (state === "error" || state === "disconnected") this.setInput(false, "");
   }
 
   setInput(enabled, reason) {
     this.inputEnabled = enabled;
     this.badge.dataset.on = String(enabled);
-    this.badge.textContent = enabled ? "input live" : `input off${reason ? ` — ${reason}` : ""}`;
+    const text = enabled ? "input live" : `input off${reason ? ` — ${reason}` : ""}`;
+    this.badge.textContent = text;
+    this.badge.title = text;
   }
 
   /// Paint a console frame. Cells are grouped into spans by attribute, so a row of plain text is
   /// one span rather than eighty — the difference between a repaint you notice and one you don't.
   paint(f) {
+    if (f.cols !== this.cols || f.rows !== this.rows) {
+      this.cols = f.cols;
+      this.rows = f.rows;
+      this.fitGrid();
+    }
     const attrs = bytes(f.attrs);
     const rows = [];
     for (let y = 0; y < f.text.length; y++) {
@@ -270,9 +299,31 @@ class Pane {
     this.fit();
   }
 
+  /// Scale the console text so a frame fits the pane it is in.
+  ///
+  /// A tty is 160 columns wide and half a window is not, so at a fixed 13px you would read a third
+  /// of each line and scroll for the rest — with two consoles up, which is the entire point of the
+  /// split view.
+  ///
+  /// **The floor is where this stops being worth it.** Two 160×50 consoles in a 1100px window works
+  /// out at about six pixels per cell whatever you do, and six-pixel text is not text. Past the
+  /// floor the pane scrolls instead — which costs little in practice, because a console line is
+  /// mostly trailing blanks: 90 legible columns show you a login prompt, a boot message or a failed
+  /// unit, and the empty right-hand half is what you give up.
+  fitGrid() {
+    if (this.graphical || !this.cols) return;
+    const box = this.body.getBoundingClientRect();
+    if (!box.width) return;
+    const byWidth = (box.width - 14) / this.cols / advanceRatio(this.grid);
+    const byHeight = (box.height - 10) / this.rows / 1.15; // 1.15 is the grid's line-height
+    const size = Math.max(10, Math.min(13, Math.floor(Math.min(byWidth, byHeight))));
+    this.grid.style.fontSize = `${size}px`;
+  }
+
   /// Scale the canvas to the pane while preserving aspect, so a 1080p desktop stays legible in
   /// half a window. The backing store stays at native resolution — we downscale for display only.
   fit() {
+    this.fitGrid();
     if (this.screen.hidden || !this.screen.width) return;
     const box = this.body.getBoundingClientRect();
     const scale = Math.min(

@@ -12,8 +12,8 @@
       {
         "label": "main",
         "title": "hublot",
-        "width": 900,
-        "height": 540,
+        "width": 1280,
+        "height": 720,
         "minWidth": 420,
         "minHeight": 240,
         "decorations": false,
@@ -30,8 +30,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
     "publisher": "Nexalit",
     "category": "Utility",
     "shortDescription": "A porthole onto a machine you're not inside.",
@@ -44,7 +49,9 @@
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false,
-        "languages": ["English"]
+        "languages": [
+          "English"
+        ]
       }
     }
   }

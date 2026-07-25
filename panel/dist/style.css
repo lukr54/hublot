@@ -35,8 +35,15 @@ body { display: flex; flex-direction: column; }
   border-bottom: 1px solid var(--edge);
 }
 
-#title { font-weight: 600; letter-spacing: 0.02em; }
-#detail { color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#title { font-weight: 600; letter-spacing: 0.02em; flex: 0 0 auto; }
+/* The one thing in the bar allowed to give way, which is why everything else is `flex: 0 0 auto`.
+   `min-width: 0` is what lets it: without it a flex item refuses to shrink below its content and
+   the squeeze lands on its neighbours instead. */
+#detail {
+  color: var(--dim); font-size: 12px;
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .spacer { flex: 1; }
 
 .dot {
@@ -48,21 +55,26 @@ body { display: flex; flex-direction: column; }
 .dot[data-state="connecting"] { background: var(--busy); }
 .dot[data-state="disconnected"], .dot[data-state="error"] { background: var(--bad); }
 
-#bar button {
+/* Direct children only — the ⟳ and — icons. Written as `#bar button` this also matched the three
+   tab buttons nested in <nav id="tabs">, and an ID selector beats `.tab` no matter which rule comes
+   last, so every tab was pinned to 26px and its label spilled over its neighbours. */
+#bar > button {
   background: transparent;
   border: 0;
   color: var(--dim);
   font-size: 14px;
   width: 26px; height: 22px;
+  flex: 0 0 auto;
   border-radius: 4px;
   cursor: pointer;
 }
-#bar button:hover { background: #21262d; color: var(--ink); }
+#bar > button:hover { background: #21262d; color: var(--ink); }
 
-#tabs { display: flex; gap: 2px; }
+#tabs { display: flex; gap: 2px; flex: 0 0 auto; }
 .tab {
   background: transparent; border: 0; color: var(--dim);
   font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  flex: 0 0 auto; white-space: nowrap; width: auto;
 }
 .tab:hover { color: var(--ink); }
 .tab[aria-selected="true"] { background: #21262d; color: var(--ink); }
@@ -160,16 +172,26 @@ button.vt:hover { background: #30363d; color: var(--ink); }
 .pane.focused { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok); }
 .pane:not(.focused) .pane-body { opacity: 0.72; }
 
+/* One line, always. A pane header that grows a second row when a console reports a long reason
+   ("this console is in K_OFF — keyboard input is disabled for this console") steals height from the
+   console itself and makes the two panes disagree about where their content starts. */
 .pane-head {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 6px; flex: 0 0 auto;
   background: var(--bar); border-bottom: 1px solid var(--edge);
   font-size: 11px;
+  white-space: nowrap;
 }
-.pane-name { font-weight: 600; }
-.pane-detail { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-name { font-weight: 600; flex: 0 0 auto; }
+/* The badge keeps its full text while there is room and truncates when there is not — the reason
+   is never lost, because it is also the element's tooltip. */
+.pane-head .input-badge { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pane-detail {
+  color: var(--dim); flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .pane-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 6px; }
-.vtrow { display: flex; align-items: center; gap: 3px; }
+.vtrow { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
 .vtrow[hidden] { display: none; }
 
 /* The mirror is a fixed grid of cells, so it is laid out as one, not reflowed as text. */

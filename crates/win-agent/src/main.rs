@@ -1,3 +1,9 @@
+// A console subsystem binary opens a black window whenever Windows starts it, which for something
+// launched at every logon is a window you never asked for and cannot close without stopping the
+// agent. Built as a GUI binary it starts silently — and `attach_output` below gives it back a
+// console when a human ran it from one, so `--pairing` still prints where you can read it.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 //! Hublot agent for Windows — Phase 6a, screen out.
 //!
 //! Same identity, pairing and transport as the Linux console agent (`agent-core`); the only thing
@@ -12,6 +18,8 @@
 mod autostart;
 #[cfg(windows)]
 mod capture;
+#[cfg(windows)]
+mod console;
 #[cfg(windows)]
 mod inject;
 #[cfg(windows)]
@@ -35,6 +43,8 @@ async fn main() -> anyhow::Result<()> {
         let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
         format!("{base}\\hublot-agent")
     });
+    // Before anything is printed: a terminal if a human started us, a log file if the scheduler did.
+    console::attach_output(&state_dir);
     let id = Arc::new(agent_core::Identity::load_or_create(&state_dir)?);
     let args: Vec<String> = std::env::args().collect();
 
