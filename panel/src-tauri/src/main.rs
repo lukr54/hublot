@@ -688,6 +688,12 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
                     }
                     winclip::set_text(&text);
                 }
+                mirror::Event::Notice(text) => {
+                    let _ = app.emit(
+                        "mirror:notice",
+                        serde_json::json!({ "target": index, "text": text }),
+                    );
+                }
                 mirror::Event::Pointer { x, y, visible } => {
                     let _ = app.emit(
                         "mirror:pointer",

@@ -169,6 +169,9 @@ async fn main() -> Result<()> {
                 // time someone copies one; the length is what proves the path works.
                 println!("  clipboard from remote — {} chars", text.chars().count());
             }
+            mirror::Event::Notice(text) => {
+                println!("  notice: {}", if text.is_empty() { "(cleared)" } else { &text });
+            }
             mirror::Event::Pointer { x, y, visible } => {
                 println!("  pointer {x},{y} visible={visible}");
             }

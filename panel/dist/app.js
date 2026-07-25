@@ -246,6 +246,19 @@ class Pane {
       `<p class="fine">Allow it there only if these six digits are the ones on its screen.</p>`;
   }
 
+  /// Say why the picture has stopped. Reuses the confirmation box, because it is the same job:
+  /// something about this pane needs words, and a black rectangle provides none.
+  notice(text) {
+    if (!text) { this.el.querySelector(".notice")?.remove(); return; }
+    let box = this.el.querySelector(".notice");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "confirm notice";
+      this.body.prepend(box);
+    }
+    box.innerHTML = `<p>${esc(text)}</p>`;
+  }
+
   setStatus(state, detail) {
     this.dot.dataset.state = state;
     this.detail.textContent = detail || "";
@@ -531,6 +544,7 @@ listen("mirror:raster", (e) => to(e.payload)?.raster(e.payload.x, e.payload.y, e
 listen("mirror:pointer", (e) => to(e.payload)?.pointer(e.payload));
 listen("mirror:pointershape", (e) => to(e.payload)?.shape(e.payload.url, e.payload.hotX, e.payload.hotY));
 listen("mirror:confirm", (e) => to(e.payload)?.confirm(e.payload.sas));
+listen("mirror:notice", (e) => to(e.payload)?.notice(e.payload.text));
 
 listen("mirror:status", (e) => {
   const { target, state, detail } = e.payload;

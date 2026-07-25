@@ -40,6 +40,8 @@ pub enum Event {
     PointerShape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
     /// Text copied on the remote machine.
     Clipboard(String),
+    /// Why the picture has stopped, in words. Empty clears it.
+    Notice(String),
     Closed(String),
 }
 
@@ -225,6 +227,10 @@ async fn read_loop(
             }
             ServerMsg::Clipboard { text } => {
                 let _ = tx.send(Event::Clipboard(text)).await;
+                continue;
+            }
+            ServerMsg::Notice { text } => {
+                let _ = tx.send(Event::Notice(text)).await;
                 continue;
             }
             ServerMsg::Pointer { x, y, visible } => {

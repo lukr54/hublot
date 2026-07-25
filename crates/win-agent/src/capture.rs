@@ -38,6 +38,8 @@ pub enum Update {
     /// The desktop's size changed — a resolution change, or a different monitor after the
     /// duplication was reacquired. Viewers must resize before the next tile means anything.
     Geometry { w: u16, h: u16 },
+    /// Words for the viewer: why the picture has stopped, or that it is back.
+    Notice(String),
     Clipboard(String),
     Pointer { x: i16, y: i16, visible: bool },
     Shape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },

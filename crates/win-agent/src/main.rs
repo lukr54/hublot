@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let tx = tx.clone();
         std::thread::Builder::new().name("capture".into()).spawn(move || {
-            let mut cap = acquire(0);
+            let mut cap = acquire(0, &tx);
             let _ = info_tx.send((cap.width as u16, cap.height as u16));
             eprintln!("[hublot] capturing {}x{}", cap.width, cap.height);
             loop {
@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => {
                         eprintln!("[hublot] lost the desktop ({e:#}) — reacquiring");
                         let (was_w, was_h) = (cap.width, cap.height);
-                        cap = acquire(cap.output);
+                        cap = acquire(cap.output, &tx);
                         if (cap.width, cap.height) != (was_w, was_h) {
                             eprintln!("[hublot] desktop is now {}x{}", cap.width, cap.height);
                             let _ = tx.send(Arc::new(capture::Update::Geometry {
@@ -206,20 +206,39 @@ async fn main() -> anyhow::Result<()> {
 /// The wait backs off to a few seconds so a locked machine costs nothing to keep trying on, and
 /// says so once rather than filling the log.
 #[cfg(windows)]
-fn acquire(output: u32) -> capture::Capture {
+fn acquire(
+    output: u32,
+    tx: &tokio::sync::broadcast::Sender<std::sync::Arc<capture::Update>>,
+) -> capture::Capture {
     let mut wait = std::time::Duration::from_millis(200);
     let mut complained = false;
     loop {
-        match capture::Capture::new(output) {
+        // Try the display we had, then fall back to whatever exists. Switching a monitor's input
+        // can take the display away entirely and bring a different one back, so insisting on the
+        // old index is how you wait forever for something that is not coming.
+        let attempt = capture::Capture::new(output)
+            .or_else(|_| capture::Capture::new(0))
+            .or_else(|_| capture::Capture::new(1));
+        match attempt {
             Ok(c) => {
                 if complained {
                     eprintln!("[hublot] desktop is back — {}x{}", c.width, c.height);
+                    let _ = tx.send(std::sync::Arc::new(capture::Update::Notice(String::new())));
                 }
                 return c;
             }
             Err(e) => {
                 if !complained {
                     eprintln!("[hublot] no desktop to capture ({e:#}); waiting for one");
+                    // The viewer is looking at a frozen or black picture and has no way to know
+                    // why. Switching a monitor's input away really does remove the display, and
+                    // "there is nothing to capture" is not something it can work out on its own.
+                    let _ = tx.send(std::sync::Arc::new(capture::Update::Notice(
+                        "This machine has no active display — Windows removed it, so there is \
+                         nothing to capture. Switch the monitor back to it, or leave a dummy plug \
+                         or virtual display attached."
+                            .into(),
+                    )));
                     complained = true;
                 }
                 std::thread::sleep(wait);
@@ -335,6 +354,7 @@ async fn stream_tiles(
                 data: t.data.clone(),
             },
             capture::Update::Geometry { w, h } => ServerMsg::ScreenInfo { w: *w, h: *h },
+            capture::Update::Notice(text) => ServerMsg::Notice { text: text.clone() },
             capture::Update::Clipboard(text) => ServerMsg::Clipboard { text: text.clone() },
             capture::Update::Pointer { x, y, visible } => {
                 ServerMsg::Pointer { x: *x, y: *y, visible: *visible }

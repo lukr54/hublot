@@ -172,6 +172,12 @@ pub enum ServerMsg {
     /// Whether this session may inject. A read-only agent, or one that could not open
     /// `/dev/uinput`, says so up front rather than swallowing keystrokes silently.
     Input { enabled: bool, reason: String },
+    /// Something the viewer should be told about the picture it is looking at, in words.
+    ///
+    /// Exists because "the image stopped changing" has several causes that are indistinguishable on
+    /// screen — the machine is idle, the link is stalled, or the display was physically taken away —
+    /// and a black rectangle explains none of them. Empty text clears the last notice.
+    Notice { text: String },
     Error(String),
 }
 
