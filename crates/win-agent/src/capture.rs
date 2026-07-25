@@ -27,12 +27,17 @@ pub struct Capture {
     pointer: crate::pointer::Pointer,
     pub width: u32,
     pub height: u32,
+    /// Which display this is, so it can be acquired again after Windows takes it away.
+    pub output: u32,
 }
 
 /// What one capture wake-up produced: possibly a changed region, possibly pointer news, possibly
 /// both. Pointer movement alone is the common case and must not force a repaint.
 pub enum Update {
     Tile(Tile),
+    /// The desktop's size changed — a resolution change, or a different monitor after the
+    /// duplication was reacquired. Viewers must resize before the next tile means anything.
+    Geometry { w: u16, h: u16 },
     Clipboard(String),
     Pointer { x: i16, y: i16, visible: bool },
     Shape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
@@ -108,6 +113,7 @@ impl Capture {
                 pointer: Default::default(),
                 width,
                 height,
+                output: output_index,
             })
         }
     }

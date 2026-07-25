@@ -93,13 +93,7 @@ async fn main() -> anyhow::Result<()> {
     {
         let tx = tx.clone();
         std::thread::Builder::new().name("capture".into()).spawn(move || {
-            let mut cap = match capture::Capture::new(0) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("[hublot] capture unavailable: {e:#}");
-                    std::process::exit(1);
-                }
-            };
+            let mut cap = acquire(0);
             let _ = info_tx.send((cap.width as u16, cap.height as u16));
             eprintln!("[hublot] capturing {}x{}", cap.width, cap.height);
             loop {
@@ -120,9 +114,32 @@ async fn main() -> anyhow::Result<()> {
                             let _ = tx.send(Arc::new(u));
                         }
                     }
+                    // **Losing the desktop is normal, not fatal.** Desktop Duplication hands back
+                    // ACCESS_LOST whenever Windows switches desktops — a UAC prompt, the lock
+                    // screen, Ctrl+Alt+Del, a resolution change, a driver reset — and this used to
+                    // exit the process, taking the agent down with it. From the panel that looked
+                    // like a link that connected and then died for no reason, which is exactly
+                    // what it was.
                     Err(e) => {
-                        eprintln!("[hublot] capture stopped: {e:#}");
-                        std::process::exit(1);
+                        eprintln!("[hublot] lost the desktop ({e:#}) — reacquiring");
+                        let (was_w, was_h) = (cap.width, cap.height);
+                        cap = acquire(cap.output);
+                        if (cap.width, cap.height) != (was_w, was_h) {
+                            eprintln!("[hublot] desktop is now {}x{}", cap.width, cap.height);
+                            let _ = tx.send(Arc::new(capture::Update::Geometry {
+                                w: cap.width as u16,
+                                h: cap.height as u16,
+                            }));
+                        }
+                        // Whatever viewers are attached are holding a stale picture of a desktop
+                        // that has since changed; give them a whole frame rather than patches of
+                        // one they no longer have.
+                        match cap.full() {
+                            Ok(t) => {
+                                let _ = tx.send(Arc::new(capture::Update::Tile(t)));
+                            }
+                            Err(e) => eprintln!("[hublot] first frame after reacquire failed: {e:#}"),
+                        }
                     }
                 }
             }
@@ -176,6 +193,40 @@ async fn main() -> anyhow::Result<()> {
         });
     }
     Ok(())
+}
+
+/// Get hold of the desktop, waiting as long as it takes.
+///
+/// There is no point failing here. The two reasons duplication is unavailable are both temporary:
+/// the machine is sitting at the lock screen, or Windows has just taken the desktop away and has
+/// not given it back yet. An agent that exits on either is an agent that stops working the first
+/// time you lock your PC and never comes back until you notice — the failure this whole function
+/// exists to avoid.
+///
+/// The wait backs off to a few seconds so a locked machine costs nothing to keep trying on, and
+/// says so once rather than filling the log.
+#[cfg(windows)]
+fn acquire(output: u32) -> capture::Capture {
+    let mut wait = std::time::Duration::from_millis(200);
+    let mut complained = false;
+    loop {
+        match capture::Capture::new(output) {
+            Ok(c) => {
+                if complained {
+                    eprintln!("[hublot] desktop is back — {}x{}", c.width, c.height);
+                }
+                return c;
+            }
+            Err(e) => {
+                if !complained {
+                    eprintln!("[hublot] no desktop to capture ({e:#}); waiting for one");
+                    complained = true;
+                }
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(std::time::Duration::from_secs(5));
+            }
+        }
+    }
 }
 
 // Everything here is per-connection state that has to come from somewhere; bundling it into a
@@ -283,6 +334,7 @@ async fn stream_tiles(
                 format: t.format,
                 data: t.data.clone(),
             },
+            capture::Update::Geometry { w, h } => ServerMsg::ScreenInfo { w: *w, h: *h },
             capture::Update::Clipboard(text) => ServerMsg::Clipboard { text: text.clone() },
             capture::Update::Pointer { x, y, visible } => {
                 ServerMsg::Pointer { x: *x, y: *y, visible: *visible }
