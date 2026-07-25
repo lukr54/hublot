@@ -12,6 +12,8 @@ publish.workspace = true
 protocol = { path = "../protocol" }
 pinning = { path = "../pinning" }
 anyhow.workspace = true
+# Only for the timeout in `refuse`; the crate is otherwise runtime-agnostic.
+tokio = { workspace = true, features = ["time"] }
 rustls.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rcgen = "0.13"

@@ -19,6 +19,7 @@ dependencies = [
  "quinn",
  "rcgen",
  "rustls",
+ "tokio",
 ]
 
 [[package]]

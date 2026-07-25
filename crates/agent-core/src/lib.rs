@@ -147,6 +147,22 @@ pub fn peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
     Some(pinning::hex(&pinning::fingerprint_of(chain.first()?)))
 }
 
+/// Tell the client why it is not welcome, and make sure it actually hears.
+///
+/// Writing the message is not enough: returning an error drops the connection, and a dropped QUIC
+/// connection discards anything not yet acknowledged — so the peer sees `connection lost` instead
+/// of the reason, which is the difference between a panel that offers to re-pair and one that shows
+/// an opaque failure. Found the first time an agent ran on a real host rather than over loopback,
+/// where the race is almost always won.
+///
+/// `stopped()` completes once the peer has acknowledged the data or given up on the stream. The
+/// timeout is there because a peer that never reads must not hold a task open.
+async fn refuse(send: &mut quinn::SendStream, why: &str) {
+    let _ = protocol::write_msg(send, &ServerMsg::Error(why.to_string())).await;
+    let _ = send.finish();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), send.stopped()).await;
+}
+
 /// Read the client's `Hello` and decide whether to let it in.
 ///
 /// The token authorises **enrolment only**, once, and only while pairing is open. Sessions are
@@ -173,11 +189,7 @@ pub async fn authenticate(
         bail!("{peer}: first message was not Hello");
     };
     if version != PROTOCOL_VERSION {
-        let _ = protocol::write_msg(
-            send,
-            &ServerMsg::Error(format!("protocol {version} unsupported, want {PROTOCOL_VERSION}")),
-        )
-        .await;
+        refuse(send, &format!("protocol {version} unsupported, want {PROTOCOL_VERSION}")).await;
         id.audit(&format!("{peer} {fingerprint} REFUSED protocol {version}"));
         bail!("{peer}: protocol mismatch");
     }
@@ -185,23 +197,18 @@ pub async fn authenticate(
     match auth {
         Auth::Certificate if id.is_allowed(&fingerprint) => {}
         Auth::Certificate => {
-            let _ =
-                protocol::write_msg(send, &ServerMsg::Error("certificate not enrolled".into())).await;
+            refuse(send, "certificate not enrolled").await;
             id.audit(&format!("{peer} {fingerprint} REFUSED unenrolled certificate"));
             bail!("{peer}: unenrolled certificate {fingerprint}");
         }
         Auth::Enrol { token } => {
             if !pairing_open {
-                let _ = protocol::write_msg(
-                    send,
-                    &ServerMsg::Error("pairing is closed; restart the agent with --pair".into()),
-                )
-                .await;
+                refuse(send, "pairing is closed; restart the agent with --pair").await;
                 id.audit(&format!("{peer} {fingerprint} REFUSED enrolment while pairing closed"));
                 bail!("{peer}: enrolment attempted while pairing closed");
             }
             if !constant_time_eq(&token, &id.token) {
-                let _ = protocol::write_msg(send, &ServerMsg::Error("bad token".into())).await;
+                refuse(send, "bad token").await;
                 // The token itself is never logged, right or wrong: a near-miss in a log file is a
                 // gift to whoever reads the log.
                 id.audit(&format!("{peer} {fingerprint} REFUSED bad pairing token"));
