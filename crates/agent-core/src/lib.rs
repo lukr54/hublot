@@ -233,11 +233,15 @@ pub async fn authenticate(
             bail!("{peer}: unenrolled certificate {fingerprint}");
         }
         Auth::Approve => {
-            if !pairing_open {
-                refuse(send, "pairing is closed; restart the agent with --pair").await;
-                id.audit(&format!("{peer} {fingerprint} REFUSED approval while pairing closed"));
-                bail!("{peer}: approval attempted while pairing closed");
-            }
+            // **Deliberately not gated on `pairing_open`.** That window exists because a *token* is
+            // a secret that could leak, so it must stop working; approval has no such secret. The
+            // control is a person at the machine deciding, and they can decide at any time.
+            //
+            // Gating it created a dead end: a panel that lost its record of this machine could only
+            // ask to pair, the agent could only say "pairing is closed", and nothing either end
+            // could do would recover it without editing files. The cost of removing the gate is
+            // that a stranger who can reach the port can make a dialog appear — which the person
+            // reading it denies, and which the firewall rule already limits to the panel's address.
             if let Some(why) = approver.why_not() {
                 refuse(send, why).await;
                 id.audit(&format!("{peer} {fingerprint} REFUSED approval unavailable"));

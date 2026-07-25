@@ -208,6 +208,23 @@ fn get_config(state: State<'_, AppState>) -> Config {
 
 #[tauri::command]
 fn save_config(app: AppHandle, state: State<'_, AppState>, config: Config) -> Result<(), String> {
+    let mut config = config;
+    // **Never let a blank fingerprint erase a known one.**
+    //
+    // The webview edits a *copy* of the config it fetched earlier. Pairing writes the certificate
+    // in the background, so any form opened before that — the settings tab, most obviously — is
+    // holding an empty fingerprint field and will happily save it back over the real one. The panel
+    // then silently forgets the machine and can only ask to pair again, which is how this was found.
+    {
+        let known = state.config.lock().unwrap();
+        for target in config.agents.iter_mut() {
+            if target.fingerprint.trim().is_empty() {
+                if let Some(old) = known.agents.iter().find(|a| a.addr == target.addr) {
+                    target.fingerprint = old.fingerprint.clone();
+                }
+            }
+        }
+    }
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(config_path(&app), json).map_err(|e| e.to_string())?;
     *state.config.lock().unwrap() = config;
@@ -644,6 +661,14 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
                     // An approval pairing learns the certificate here, and it has to be written
                     // down now: every later connection pins it, and if this is lost the machine
                     // would silently fall back to asking for approval again.
+                    // An empty fingerprint here means the handshake never recorded the
+                    // certificate, which would leave this machine unpaired-but-connected and
+                    // asking to pair again on the next run. Say so rather than letting it pass.
+                    if fingerprint.is_empty() {
+                        eprintln!(
+                            "[hublot] enrolled with {addr} but observed no certificate — it will                              ask to pair again next time"
+                        );
+                    }
                     if !fingerprint.is_empty() {
                         if let Some(s) = app.try_state::<AppState>() {
                             let mut cfg = s.config.lock().unwrap();
