@@ -41,7 +41,12 @@ async fn main() -> Result<()> {
     // backspaces them away again. Deliberately no Enter: submitting at a login prompt lands on a
     // non-echoing password prompt, which blinds every later observation.
     let to_type: Vec<String> = std::env::var("HUBLOT_TYPE")
-        .map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     tokio::spawn(async move {
         if let Err(e) = mirror::stream(addr, fingerprint, identity, auth, tx, keys_rx).await {
@@ -61,12 +66,21 @@ async fn main() -> Result<()> {
                 println!("✓ enrolled — pin this from now on: {fingerprint}");
             }
             mirror::Event::Input { enabled, reason } => {
-                println!("· input {}{}", if enabled { "enabled" } else { "DISABLED" }, if reason.is_empty() { String::new() } else { format!(" ({reason})") });
+                println!(
+                    "· input {}{}",
+                    if enabled { "enabled" } else { "DISABLED" },
+                    if reason.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({reason})")
+                    }
+                );
                 // HUBLOT_MOUSE="800,400" — move the remote pointer there. Verifiable from outside
                 // the panel by asking the OS where its cursor ended up.
                 if let Ok(spec) = std::env::var("HUBLOT_MOUSE") {
                     if let Some((sx, sy)) = spec.split_once(',') {
-                        if let (Ok(x), Ok(y)) = (sx.trim().parse::<u16>(), sy.trim().parse::<u16>()) {
+                        if let (Ok(x), Ok(y)) = (sx.trim().parse::<u16>(), sy.trim().parse::<u16>())
+                        {
                             let keys = keys_tx.clone();
                             tokio::spawn(async move {
                                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -111,11 +125,21 @@ async fn main() -> Result<()> {
                                 .filter_map(|c| protocol::keymap::evdev_for_code(c.trim()))
                                 .collect();
                             for &c in &codes {
-                                let _ = keys.send(protocol::ClientMsg::Key { code: c, down: true }).await;
+                                let _ = keys
+                                    .send(protocol::ClientMsg::Key {
+                                        code: c,
+                                        down: true,
+                                    })
+                                    .await;
                                 tokio::time::sleep(std::time::Duration::from_millis(40)).await;
                             }
                             for &c in codes.iter().rev() {
-                                let _ = keys.send(protocol::ClientMsg::Key { code: c, down: false }).await;
+                                let _ = keys
+                                    .send(protocol::ClientMsg::Key {
+                                        code: c,
+                                        down: false,
+                                    })
+                                    .await;
                                 tokio::time::sleep(std::time::Duration::from_millis(40)).await;
                             }
                             eprintln!("  chord sent: {codes:?}");
@@ -149,7 +173,8 @@ async fn main() -> Result<()> {
                         let bs = protocol::keymap::evdev_for_code("Backspace").unwrap();
                         for _ in 0..codes.len() {
                             for down in [true, false] {
-                                let _ = keys.send(protocol::ClientMsg::Key { code: bs, down }).await;
+                                let _ =
+                                    keys.send(protocol::ClientMsg::Key { code: bs, down }).await;
                                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                             }
                         }
@@ -159,7 +184,14 @@ async fn main() -> Result<()> {
             mirror::Event::ScreenInfo { w, h } => {
                 println!("· graphical desktop {w}x{h} — this agent mirrors pixels, not characters");
             }
-            mirror::Event::Raster { x, y, w, h, mime, data } => {
+            mirror::Event::Raster {
+                x,
+                y,
+                w,
+                h,
+                mime,
+                data,
+            } => {
                 // The CLI cannot show pixels; reporting size is what makes it useful here, since
                 // bytes-per-update is the number that decides whether this leg is viable.
                 println!("  tile {w}x{h} at {x},{y} — {} bytes {mime}", data.len());
@@ -170,13 +202,25 @@ async fn main() -> Result<()> {
                 println!("  clipboard from remote — {} chars", text.chars().count());
             }
             mirror::Event::Notice(text) => {
-                println!("  notice: {}", if text.is_empty() { "(cleared)" } else { &text });
+                println!(
+                    "  notice: {}",
+                    if text.is_empty() { "(cleared)" } else { &text }
+                );
             }
             mirror::Event::Pointer { x, y, visible } => {
                 println!("  pointer {x},{y} visible={visible}");
             }
-            mirror::Event::PointerShape { w, h, hot_x, hot_y, png } => {
-                println!("  pointer shape {w}x{h} hotspot {hot_x},{hot_y} — {} bytes", png.len());
+            mirror::Event::PointerShape {
+                w,
+                h,
+                hot_x,
+                hot_y,
+                png,
+            } => {
+                println!(
+                    "  pointer shape {w}x{h} hotspot {hot_x},{hot_y} — {} bytes",
+                    png.len()
+                );
             }
             mirror::Event::Closed(why) => {
                 println!("\n── closed: {why} ──");

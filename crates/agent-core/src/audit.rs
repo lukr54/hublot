@@ -26,7 +26,11 @@ pub fn record(dir: &Path, event: &str) {
     }
     // A log that cannot be written must not take the agent down with it: the console mirror is the
     // job, and refusing to serve because a disk is full would be the wrong trade.
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }

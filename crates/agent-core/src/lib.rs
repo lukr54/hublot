@@ -43,7 +43,10 @@ impl Identity {
             let raw = random_32().context("reading system randomness")?;
             std::fs::write(
                 &token_path,
-                format!("{}\n", raw.iter().map(|b| format!("{b:02x}")).collect::<String>()),
+                format!(
+                    "{}\n",
+                    raw.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                ),
             )?;
             restrict(&token_path)?;
         }
@@ -52,10 +55,18 @@ impl Identity {
         let key = std::fs::read(&key_path)?;
         let token = std::fs::read_to_string(&token_path)?.trim().to_string();
         if token.len() < 32 {
-            bail!("token in {} looks too short to be the generated one", token_path.display());
+            bail!(
+                "token in {} looks too short to be the generated one",
+                token_path.display()
+            );
         }
         let allowed = std::fs::read_to_string(dir.join("clients"))
-            .map(|s| s.lines().map(|l| l.trim().to_uppercase()).filter(|l| !l.is_empty()).collect())
+            .map(|s| {
+                s.lines()
+                    .map(|l| l.trim().to_uppercase())
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
 
         Ok(Self {
@@ -85,7 +96,10 @@ impl Identity {
         let path = self.dir.join("clients");
         let mut set = self.allowed.lock().unwrap();
         set.insert(fp.to_uppercase());
-        std::fs::write(&path, format!("{}\n", set.iter().cloned().collect::<Vec<_>>().join("\n")))?;
+        std::fs::write(
+            &path,
+            format!("{}\n", set.iter().cloned().collect::<Vec<_>>().join("\n")),
+        )?;
         restrict(&path)?;
         Ok(())
     }
@@ -143,7 +157,9 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 /// The fingerprint of the certificate the peer proved it holds the key for.
 pub fn peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
     let identity = conn.peer_identity()?;
-    let chain = identity.downcast::<Vec<rustls::pki_types::CertificateDer>>().ok()?;
+    let chain = identity
+        .downcast::<Vec<rustls::pki_types::CertificateDer>>()
+        .ok()?;
     Some(pinning::hex(&pinning::fingerprint_of(chain.first()?)))
 }
 
@@ -216,11 +232,17 @@ pub async fn authenticate(
     let ClientMsg::Hello { version, auth } =
         protocol::read_msg_capped(recv, protocol::MAX_HELLO).await?
     else {
-        id.audit(&format!("{peer} {fingerprint} REFUSED first message was not Hello"));
+        id.audit(&format!(
+            "{peer} {fingerprint} REFUSED first message was not Hello"
+        ));
         bail!("{peer}: first message was not Hello");
     };
     if version != PROTOCOL_VERSION {
-        refuse(send, &format!("protocol {version} unsupported, want {PROTOCOL_VERSION}")).await;
+        refuse(
+            send,
+            &format!("protocol {version} unsupported, want {PROTOCOL_VERSION}"),
+        )
+        .await;
         id.audit(&format!("{peer} {fingerprint} REFUSED protocol {version}"));
         bail!("{peer}: protocol mismatch");
     }
@@ -229,7 +251,9 @@ pub async fn authenticate(
         Auth::Certificate if id.is_allowed(&fingerprint) => {}
         Auth::Certificate => {
             refuse(send, "certificate not enrolled").await;
-            id.audit(&format!("{peer} {fingerprint} REFUSED unenrolled certificate"));
+            id.audit(&format!(
+                "{peer} {fingerprint} REFUSED unenrolled certificate"
+            ));
             bail!("{peer}: unenrolled certificate {fingerprint}");
         }
         Auth::Approve => {
@@ -244,7 +268,9 @@ pub async fn authenticate(
             // reading it denies, and which the firewall rule already limits to the panel's address.
             if let Some(why) = approver.why_not() {
                 refuse(send, why).await;
-                id.audit(&format!("{peer} {fingerprint} REFUSED approval unavailable"));
+                id.audit(&format!(
+                    "{peer} {fingerprint} REFUSED approval unavailable"
+                ));
                 bail!("{peer}: cannot ask for approval — {why}");
             }
 
@@ -268,13 +294,17 @@ pub async fn authenticate(
                 bail!("{peer}: approval declined");
             }
             id.enrol(&fingerprint)?;
-            id.audit(&format!("{peer} {fingerprint} ENROLLED by approval, sas {sas}"));
+            id.audit(&format!(
+                "{peer} {fingerprint} ENROLLED by approval, sas {sas}"
+            ));
             protocol::write_msg(send, &ServerMsg::Enrolled).await?;
         }
         Auth::Enrol { token } => {
             if !pairing_open {
                 refuse(send, "pairing is closed; restart the agent with --pair").await;
-                id.audit(&format!("{peer} {fingerprint} REFUSED enrolment while pairing closed"));
+                id.audit(&format!(
+                    "{peer} {fingerprint} REFUSED enrolment while pairing closed"
+                ));
                 bail!("{peer}: enrolment attempted while pairing closed");
             }
             if !constant_time_eq(&token, &id.token) {

@@ -41,7 +41,10 @@ pub struct Cell {
 
 impl Default for Cell {
     fn default() -> Self {
-        Self { ch: ' ', attr: 0x07 }
+        Self {
+            ch: ' ',
+            attr: 0x07,
+        }
     }
 }
 
@@ -102,29 +105,48 @@ pub enum Auth {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Hello { version: u32, auth: Auth },
+    Hello {
+        version: u32,
+        auth: Auth,
+    },
     /// A physical key, by evdev code. The *remote* keymap decides which character appears —
     /// see DECISIONS.md D2.
-    Key { code: u16, down: bool },
+    Key {
+        code: u16,
+        down: bool,
+    },
     /// Release everything held. Sent on focus loss, view change, and window hide.
     ReleaseAll,
     /// Text copied on the panel's machine, offered to the remote one.
-    Clipboard { text: String },
+    Clipboard {
+        text: String,
+    },
     /// Absolute pointer position, in the captured screen's own pixels.
     ///
     /// Absolute rather than relative on purpose: a lost or reordered motion message is corrected by
     /// the very next one, where a lost *delta* would leave the two cursors permanently offset.
-    MouseMove { x: u16, y: u16 },
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
     /// 0 = left, 1 = right, 2 = middle.
-    MouseButton { button: u8, down: bool },
+    MouseButton {
+        button: u8,
+        down: bool,
+    },
     /// Wheel notches; positive is away from the user.
-    MouseScroll { dx: i16, dy: i16 },
+    MouseScroll {
+        dx: i16,
+        dy: i16,
+    },
     /// Switch the active console by **ioctl**, not by injecting Ctrl+Alt+Fn.
     ///
     /// This exists because a VT whose keyboard is disabled (`K_OFF`) ignores the chord that would
     /// take you off it — so injection-based switching can strand the user on a console they cannot
     /// leave. `VT_ACTIVATE` works regardless of keyboard mode. See DECISIONS.md D13.
-    SwitchVt { vt: u8 },
+    SwitchVt {
+        vt: u8,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,17 +167,34 @@ pub enum ServerMsg {
     ///
     /// Sent *before* the agent blocks on the dialog, so the panel can show the number while the
     /// user is still looking at the other machine rather than after they have decided.
-    Confirm { sas: String },
+    Confirm {
+        sas: String,
+    },
     /// Geometry of a graphical desktop. Sent once on connect and whenever it changes.
-    ScreenInfo { w: u16, h: u16 },
+    ScreenInfo {
+        w: u16,
+        h: u16,
+    },
     /// Text copied on the remote machine, offered to the panel's.
-    Clipboard { text: String },
+    Clipboard {
+        text: String,
+    },
     /// Where the remote pointer is. Captured frames never contain it — Windows composites the
     /// cursor in hardware — so it travels separately and the viewer draws it.
-    Pointer { x: i16, y: i16, visible: bool },
+    Pointer {
+        x: i16,
+        y: i16,
+        visible: bool,
+    },
     /// What the remote pointer looks like. Sent only when it changes, so the viewer caches it.
     /// PNG because a cursor is hard edges plus an alpha channel.
-    PointerShape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
+    PointerShape {
+        w: u16,
+        h: u16,
+        hot_x: u16,
+        hot_y: u16,
+        png: Vec<u8>,
+    },
     /// A rectangle of the desktop that changed.
     ///
     /// The console leg ships characters because the kernel finished the rendering for us; a
@@ -171,13 +210,18 @@ pub enum ServerMsg {
     },
     /// Whether this session may inject. A read-only agent, or one that could not open
     /// `/dev/uinput`, says so up front rather than swallowing keystrokes silently.
-    Input { enabled: bool, reason: String },
+    Input {
+        enabled: bool,
+        reason: String,
+    },
     /// Something the viewer should be told about the picture it is looking at, in words.
     ///
     /// Exists because "the image stopped changing" has several causes that are indistinguishable on
     /// screen — the machine is idle, the link is stalled, or the display was physically taken away —
     /// and a black rectangle explains none of them. Empty text clears the last notice.
-    Notice { text: String },
+    Notice {
+        text: String,
+    },
     Error(String),
 }
 
@@ -264,7 +308,9 @@ pub async fn read_msg_capped<T: DeserializeOwned>(
     max: usize,
 ) -> Result<T> {
     let mut len = [0u8; 4];
-    recv.read_exact(&mut len).await.context("reading length prefix")?;
+    recv.read_exact(&mut len)
+        .await
+        .context("reading length prefix")?;
     let len = u32::from_le_bytes(len) as usize;
     if len > max {
         bail!("peer announced a {len} byte message; refusing");
@@ -345,13 +391,19 @@ mod tests {
 
         let mut patched = before.clone();
         assert!(apply(&mut patched, &runs));
-        assert_eq!(patched.cells, after.cells, "reassembled screen must match the source");
+        assert_eq!(
+            patched.cells, after.cells,
+            "reassembled screen must match the source"
+        );
     }
 
     #[test]
     fn apply_rejects_a_run_past_the_end() {
         let mut s = screen("abc");
-        let bad = vec![Run { offset: 2, cells: vec![Cell::default(); 4] }];
+        let bad = vec![Run {
+            offset: 2,
+            cells: vec![Cell::default(); 4],
+        }];
         assert!(!apply(&mut s, &bad));
     }
 }

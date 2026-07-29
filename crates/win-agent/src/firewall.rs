@@ -41,7 +41,13 @@ pub fn command_line(exe: &str, port: u16, allow: &str) -> String {
 pub fn allow(exe: &str, port: u16, allow_ip: &str) -> Result<()> {
     // Replace rather than accumulate: re-running --install should not leave a trail of rules, and
     // Windows will happily add a second one with the same name.
-    let _ = netsh(&["advfirewall", "firewall", "delete", "rule", &format!("name={RULE}")]);
+    let _ = netsh(&[
+        "advfirewall",
+        "firewall",
+        "delete",
+        "rule",
+        &format!("name={RULE}"),
+    ]);
 
     let (ok, text) = netsh(&[
         "advfirewall",
@@ -66,20 +72,37 @@ pub fn allow(exe: &str, port: u16, allow_ip: &str) -> Result<()> {
 }
 
 pub fn remove() -> Result<()> {
-    let (ok, text) = netsh(&["advfirewall", "firewall", "delete", "rule", &format!("name={RULE}")])?;
+    let (ok, text) = netsh(&[
+        "advfirewall",
+        "firewall",
+        "delete",
+        "rule",
+        &format!("name={RULE}"),
+    ])?;
     if ok {
         println!("Firewall: rule \"{RULE}\" removed.");
     } else {
-        println!("Firewall: no rule \"{RULE}\" to remove ({})", text.lines().next().unwrap_or(""));
+        println!(
+            "Firewall: no rule \"{RULE}\" to remove ({})",
+            text.lines().next().unwrap_or("")
+        );
     }
     Ok(())
 }
 
 /// What the rule currently says, for `--status`.
 pub fn show() -> String {
-    match netsh(&["advfirewall", "firewall", "show", "rule", &format!("name={RULE}")]) {
+    match netsh(&[
+        "advfirewall",
+        "firewall",
+        "show",
+        "rule",
+        &format!("name={RULE}"),
+    ]) {
         Ok((true, text)) => text,
-        Ok((false, _)) => format!("No firewall rule \"{RULE}\" — the panel will not be able to connect."),
+        Ok((false, _)) => {
+            format!("No firewall rule \"{RULE}\" — the panel will not be able to connect.")
+        }
         Err(e) => format!("could not query the firewall: {e}"),
     }
 }

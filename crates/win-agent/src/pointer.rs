@@ -84,16 +84,22 @@ fn decode(buf: &[u8], info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO) -> Option<Shape> {
                     let xor = (buf.get((y + h as usize) * pitch + x / 8)? >> bit) & 1;
                     let px = &mut out[(y * w as usize + x) * 4..][..4];
                     match (and, xor) {
-                        (0, 0) => px.copy_from_slice(&[0, 0, 0, 255]),       // black
+                        (0, 0) => px.copy_from_slice(&[0, 0, 0, 255]), // black
                         (0, 1) => px.copy_from_slice(&[255, 255, 255, 255]), // white
-                        (1, 0) => px.copy_from_slice(&[0, 0, 0, 0]),         // transparent
+                        (1, 0) => px.copy_from_slice(&[0, 0, 0, 0]),   // transparent
                         // "invert what is underneath" — impossible remotely; black reads better
                         // than a hole, and this case is rare outside text carets.
                         _ => px.copy_from_slice(&[0, 0, 0, 255]),
                     }
                 }
             }
-            return Some(Shape { w, h, hot_x, hot_y, rgba: out });
+            return Some(Shape {
+                w,
+                h,
+                hot_x,
+                hot_y,
+                rgba: out,
+            });
         }
         2 | 4 => {
             let mut out = vec![0u8; (w * h * 4) as usize];
@@ -118,7 +124,13 @@ fn decode(buf: &[u8], info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO) -> Option<Shape> {
         }
         _ => return None,
     };
-    Some(Shape { w, h, hot_x, hot_y, rgba })
+    Some(Shape {
+        w,
+        h,
+        hot_x,
+        hot_y,
+        rgba,
+    })
 }
 
 /// PNG, because a cursor has hard edges and an alpha channel — exactly what JPEG is worst at.

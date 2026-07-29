@@ -41,12 +41,25 @@ pub enum Update {
     Tile(Tile),
     /// The desktop's size changed — a resolution change, or a different monitor after the
     /// duplication was reacquired. Viewers must resize before the next tile means anything.
-    Geometry { w: u16, h: u16 },
+    Geometry {
+        w: u16,
+        h: u16,
+    },
     /// Words for the viewer: why the picture has stopped, or that it is back.
     Notice(String),
     Clipboard(String),
-    Pointer { x: i16, y: i16, visible: bool },
-    Shape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
+    Pointer {
+        x: i16,
+        y: i16,
+        visible: bool,
+    },
+    Shape {
+        w: u16,
+        h: u16,
+        hot_x: u16,
+        hot_y: u16,
+        png: Vec<u8>,
+    },
 }
 
 /// A changed region, already encoded.
@@ -122,7 +135,11 @@ impl Capture {
             .map(|d| d.index)
             .unwrap_or(0);
         let mut cap = Self::new(index)?;
-        cap.name = all.iter().find(|d| d.index == index).map(|d| d.name.clone()).unwrap_or_default();
+        cap.name = all
+            .iter()
+            .find(|d| d.index == index)
+            .map(|d| d.name.clone())
+            .unwrap_or_default();
         Ok(cap)
     }
 
@@ -167,7 +184,10 @@ impl Capture {
                     MipLevels: 1,
                     ArraySize: 1,
                     Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
                     Usage: D3D11_USAGE_STAGING,
                     BindFlags: 0,
                     CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
@@ -206,7 +226,10 @@ impl Capture {
         unsafe {
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            match self.dup.AcquireNextFrame(timeout_ms, &mut info, &mut resource) {
+            match self
+                .dup
+                .AcquireNextFrame(timeout_ms, &mut info, &mut resource)
+            {
                 Ok(()) => {}
                 Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(updates),
                 Err(e) => bail!("AcquireNextFrame: {e}"),
@@ -278,7 +301,11 @@ impl Capture {
             // A full grab needs a frame in the staging texture; take whatever is current.
             let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut resource = None;
-            if self.dup.AcquireNextFrame(500, &mut info, &mut resource).is_ok() {
+            if self
+                .dup
+                .AcquireNextFrame(500, &mut info, &mut resource)
+                .is_ok()
+            {
                 if let Some(res) = resource.as_ref() {
                     let tex: ID3D11Texture2D = res.cast()?;
                     self.context.CopyResource(&self.staging, &tex);
@@ -300,11 +327,16 @@ impl Capture {
         unsafe {
             let x0 = r.left.max(0) as u32;
             let y0 = r.top.max(0) as u32;
-            let w = (r.right.min(self.width as i32) as u32).saturating_sub(x0).max(1);
-            let h = (r.bottom.min(self.height as i32) as u32).saturating_sub(y0).max(1);
+            let w = (r.right.min(self.width as i32) as u32)
+                .saturating_sub(x0)
+                .max(1);
+            let h = (r.bottom.min(self.height as i32) as u32)
+                .saturating_sub(y0)
+                .max(1);
 
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            self.context
+                .Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
             let src = mapped.pData as *const u8;
             let mut rgb = Vec::with_capacity((w * h * 3) as usize);
             for y in 0..h {
@@ -339,8 +371,12 @@ impl Capture {
                     .write_image(&rgb, w, h, image::ExtendedColorType::Rgb8)?;
                 }
                 protocol::RasterFormat::Jpeg => {
-                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut data, 82)
-                        .encode(&rgb, w, h, image::ExtendedColorType::Rgb8)?;
+                    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut data, 82).encode(
+                        &rgb,
+                        w,
+                        h,
+                        image::ExtendedColorType::Rgb8,
+                    )?;
                 }
             }
 

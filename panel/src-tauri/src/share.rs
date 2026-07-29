@@ -95,7 +95,9 @@ pub fn status(app: &AppHandle, port: u16) -> ShareStatus {
 /// the agent is the thing that has to open the display, and two enumerations can disagree about
 /// what exists — which is exactly the kind of difference nobody would think to look for.
 pub fn displays(app: &AppHandle) -> Vec<(String, bool)> {
-    let Some(path) = agent_path(app) else { return Vec::new() };
+    let Some(path) = agent_path(app) else {
+        return Vec::new();
+    };
     let Ok(out) = std::process::Command::new(&path).arg("--displays").output() else {
         return Vec::new();
     };

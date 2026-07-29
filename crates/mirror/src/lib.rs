@@ -21,23 +21,50 @@ pub enum Event {
     Connected,
     /// The agent is asking the person at that machine whether to allow us. These six digits are
     /// showing on its screen too, and the user compares them.
-    Confirm { sas: String },
+    Confirm {
+        sas: String,
+    },
     /// Our certificate was just added to the agent's allowlist.
     ///
     /// Carries the fingerprint we observed, because for an approval pairing this is the moment the
     /// caller learns which certificate to pin from now on — a first contact has nothing to pin
     /// until a human has confirmed it.
-    Enrolled { fingerprint: String },
+    Enrolled {
+        fingerprint: String,
+    },
     /// Whether this session may inject keys, and why not if it may not.
-    Input { enabled: bool, reason: String },
+    Input {
+        enabled: bool,
+        reason: String,
+    },
     Screen(Screen),
     /// This agent mirrors a graphical desktop rather than a text console.
-    ScreenInfo { w: u16, h: u16 },
+    ScreenInfo {
+        w: u16,
+        h: u16,
+    },
     /// A changed rectangle of that desktop, already compressed.
-    Raster { x: u16, y: u16, w: u16, h: u16, mime: &'static str, data: Vec<u8> },
+    Raster {
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        mime: &'static str,
+        data: Vec<u8>,
+    },
     /// Where the remote pointer is, and what it looks like — both arrive outside the frames.
-    Pointer { x: i16, y: i16, visible: bool },
-    PointerShape { w: u16, h: u16, hot_x: u16, hot_y: u16, png: Vec<u8> },
+    Pointer {
+        x: i16,
+        y: i16,
+        visible: bool,
+    },
+    PointerShape {
+        w: u16,
+        h: u16,
+        hot_x: u16,
+        hot_y: u16,
+        png: Vec<u8>,
+    },
     /// Text copied on the remote machine.
     Clipboard(String),
     /// Why the picture has stopped, in words. Empty clears it.
@@ -87,7 +114,10 @@ fn client_config(
     // and from the next connection onwards this branch is never taken again for that machine.
     let (verifier, observed): (Arc<dyn rustls::client::danger::ServerCertVerifier>, _) =
         match server_fingerprint {
-            Some(fp) => (Arc::new(protocol::pin::PinnedCert::new(fp, provider.clone())), None),
+            Some(fp) => (
+                Arc::new(protocol::pin::PinnedCert::new(fp, provider.clone())),
+                None,
+            ),
             None => {
                 let tofu = protocol::pin::TrustOnFirstUse::new(provider.clone());
                 let seen = tofu.observed();
@@ -118,7 +148,9 @@ fn client_config(
     let mut transport = quinn::TransportConfig::default();
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
     transport.max_idle_timeout(Some(
-        std::time::Duration::from_secs(30).try_into().context("idle timeout")?,
+        std::time::Duration::from_secs(30)
+            .try_into()
+            .context("idle timeout")?,
     ));
     cfg.transport_config(Arc::new(transport));
     Ok((cfg, observed))
@@ -149,7 +181,14 @@ pub async fn stream(
         .context("handshake")?;
 
     let (mut send, mut recv) = conn.open_bi().await.context("opening stream")?;
-    protocol::write_msg(&mut send, &ClientMsg::Hello { version: PROTOCOL_VERSION, auth }).await?;
+    protocol::write_msg(
+        &mut send,
+        &ClientMsg::Hello {
+            version: PROTOCOL_VERSION,
+            auth,
+        },
+    )
+    .await?;
     let _ = tx.send(Event::Connected).await;
 
     // One writer owns the send half.
@@ -190,7 +229,9 @@ async fn read_loop(
                 // A diff for a VT we aren't holding means we missed a switch: refuse to paint
                 // rather than smear one console's text over another's.
                 if current.vt != vt || !protocol::apply(current, &runs) {
-                    let _ = tx.send(Event::Closed("desynchronised from the agent".into())).await;
+                    let _ = tx
+                        .send(Event::Closed("desynchronised from the agent".into()))
+                        .await;
                     return Ok(());
                 }
                 current.cursor = cursor;
@@ -219,9 +260,23 @@ async fn read_loop(
                 let _ = tx.send(Event::ScreenInfo { w, h }).await;
                 continue;
             }
-            ServerMsg::Raster { x, y, w, h, format, data } => {
+            ServerMsg::Raster {
+                x,
+                y,
+                w,
+                h,
+                format,
+                data,
+            } => {
                 let _ = tx
-                    .send(Event::Raster { x, y, w, h, mime: format.mime(), data })
+                    .send(Event::Raster {
+                        x,
+                        y,
+                        w,
+                        h,
+                        mime: format.mime(),
+                        data,
+                    })
                     .await;
                 continue;
             }
@@ -237,12 +292,28 @@ async fn read_loop(
                 let _ = tx.send(Event::Pointer { x, y, visible }).await;
                 continue;
             }
-            ServerMsg::PointerShape { w, h, hot_x, hot_y, png } => {
-                let _ = tx.send(Event::PointerShape { w, h, hot_x, hot_y, png }).await;
+            ServerMsg::PointerShape {
+                w,
+                h,
+                hot_x,
+                hot_y,
+                png,
+            } => {
+                let _ = tx
+                    .send(Event::PointerShape {
+                        w,
+                        h,
+                        hot_x,
+                        hot_y,
+                        png,
+                    })
+                    .await;
                 continue;
             }
             ServerMsg::Error(e) => {
-                let _ = tx.send(Event::Closed(format!("agent refused us: {e}"))).await;
+                let _ = tx
+                    .send(Event::Closed(format!("agent refused us: {e}")))
+                    .await;
                 return Ok(());
             }
         }

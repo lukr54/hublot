@@ -146,7 +146,7 @@ reading the list, so this is kept honest even where the honest answer is "no".
 
 # Revision 2026-07-24 — deltas from the corrected topology
 
-See PLAN.md §1–§2. The design gained a **screen-out** leg (mirroring the host's text VT) and a
+The design gained a **screen-out** leg (mirroring the host's text VT) and a
 **PVE API client**. Everything above still holds; these are additions.
 
 ## R1. New asset: the console *contents* (this is the big one)
@@ -167,7 +167,7 @@ key material printed by a careless one-liner, error messages naming internal hos
 ## R2. New secret at rest: PVE credentials on Windows
 Tier 2 (termproxy) authenticates to Proxmox from the main PC. If PVE API tokens turn out to work for
 console endpoints, use a **scoped token** with the narrowest privileges that open a console. If they
-do not (verify — PLAN.md §5), the panel is storing **a password that can administer the hypervisor**.
+do not (verify this against your own cluster), the panel is storing **a password that can administer the hypervisor**.
 
 - Seal it with **DPAPI, user-scoped**, never in a config file, never in the repo, never in a log.
 - Prefer a dedicated PVE user over `root@pam` if console access can be delegated at all.

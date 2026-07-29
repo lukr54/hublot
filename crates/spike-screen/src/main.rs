@@ -87,7 +87,10 @@ mod windows_impl {
                     MipLevels: 1,
                     ArraySize: 1,
                     Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
                     Usage: D3D11_USAGE_STAGING,
                     BindFlags: 0,
                     CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
@@ -153,7 +156,9 @@ mod windows_impl {
 
                         let (x0, y0, x1, y1) = rects.iter().fold(
                             (i32::MAX, i32::MAX, 0i32, 0i32),
-                            |(a, b, c, d), r| (a.min(r.left), b.min(r.top), c.max(r.right), d.max(r.bottom)),
+                            |(a, b, c, d), r| {
+                                (a.min(r.left), b.min(r.top), c.max(r.right), d.max(r.bottom))
+                            },
                         );
                         let (bw, bh) = ((x1 - x0).max(1) as u32, (y1 - y0).max(1) as u32);
                         let mut rgb = Vec::with_capacity((bw * bh * 3) as usize);
@@ -162,15 +167,20 @@ mod windows_impl {
                             let row = src.add(((y0 as u32 + y) * mapped.RowPitch) as usize);
                             for x in 0..bw {
                                 let p = row.add(((x0 as u32 + x) * 4) as usize);
-                                rgb.extend_from_slice(&[*p.add(2), *p.add(1), *p]); // BGRA → RGB
+                                rgb.extend_from_slice(&[*p.add(2), *p.add(1), *p]);
+                                // BGRA → RGB
                             }
                         }
                         context.Unmap(&staging, 0);
 
                         let t1 = Instant::now();
                         let mut out = Vec::new();
-                        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
-                            .encode(&rgb, bw, bh, image::ExtendedColorType::Rgb8)?;
+                        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode(
+                            &rgb,
+                            bw,
+                            bh,
+                            image::ExtendedColorType::Rgb8,
+                        )?;
                         s.encode_us.push(t1.elapsed().as_micros());
                         s.encoded_bytes.push(out.len());
                     }
@@ -200,7 +210,10 @@ mod windows_impl {
 
         println!("\n──────── results ────────");
         println!("frames delivered : {}", s.frames);
-        println!("idle timeouts    : {}  (screen unchanged — costs nothing)", s.empty_waits);
+        println!(
+            "idle timeouts    : {}  (screen unchanged — costs nothing)",
+            s.empty_waits
+        );
         println!("acquire median   : {} µs", median(&mut acq));
         if !s.dirty_pixels.is_empty() {
             let total: u64 = s.dirty_pixels.iter().sum();
@@ -213,10 +226,18 @@ mod windows_impl {
             let max = s.encoded_bytes.iter().max().unwrap();
             println!("encoded / update : {avg} bytes avg, {max} max (JPEG q80, change bbox)");
             println!("encode median    : {} µs", median(&mut enc));
-            println!("at 30 fps that is ~{:.1} Mbit/s sustained", (avg * 30 * 8) as f64 / 1e6);
+            println!(
+                "at 30 fps that is ~{:.1} Mbit/s sustained",
+                (avg * 30 * 8) as f64 / 1e6
+            );
         }
-        println!("full raw frame   : {:.1} MB (for scale)", full_raw as f64 / 1e6);
-        println!("\nCompare against the Linux console leg: ~12 KB per FULL repaint, and nothing at all");
+        println!(
+            "full raw frame   : {:.1} MB (for scale)",
+            full_raw as f64 / 1e6
+        );
+        println!(
+            "\nCompare against the Linux console leg: ~12 KB per FULL repaint, and nothing at all"
+        );
         println!("when idle. That gap is the whole argument for what this leg costs to build.");
     }
 }

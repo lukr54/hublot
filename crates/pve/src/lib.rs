@@ -81,7 +81,9 @@ impl PveClient {
         if !status.is_success() {
             bail!("login failed ({status}): {body}");
         }
-        let data = body.get("data").ok_or_else(|| anyhow!("no data in ticket response"))?;
+        let data = body
+            .get("data")
+            .ok_or_else(|| anyhow!("no data in ticket response"))?;
         Ok(Ticket {
             ticket: str_field(data, "ticket")?,
             csrf: str_field(data, "CSRFPreventionToken")?,
@@ -94,7 +96,10 @@ impl PveClient {
         let resp = self
             .http
             .post(format!("{}/nodes/{node}/termproxy", self.base))
-            .header("Cookie", format!("PVEAuthCookie={}", urlencoding::encode(&ticket.ticket)))
+            .header(
+                "Cookie",
+                format!("PVEAuthCookie={}", urlencoding::encode(&ticket.ticket)),
+            )
             .header("CSRFPreventionToken", &ticket.csrf)
             .send()
             .await
@@ -105,7 +110,9 @@ impl PveClient {
         if !status.is_success() {
             bail!("termproxy failed ({status}): {body}");
         }
-        let data = body.get("data").ok_or_else(|| anyhow!("no data in termproxy response"))?;
+        let data = body
+            .get("data")
+            .ok_or_else(|| anyhow!("no data in termproxy response"))?;
         Ok(TermProxy {
             user: str_field(data, "user")?,
             ticket: str_field(data, "ticket")?,
@@ -167,7 +174,10 @@ impl PveClient {
             Some(Ok(msg)) => {
                 let bytes = msg.into_data();
                 if !bytes.starts_with(b"OK") {
-                    bail!("expected OK after ws auth, got {:?}", String::from_utf8_lossy(&bytes));
+                    bail!(
+                        "expected OK after ws auth, got {:?}",
+                        String::from_utf8_lossy(&bytes)
+                    );
                 }
             }
             Some(Err(e)) => bail!("ws error during auth: {e}"),
@@ -177,9 +187,8 @@ impl PveClient {
     }
 }
 
-pub type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+pub type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Re-exported so callers speak the same tungstenite version we do.
 pub use tokio_tungstenite::tungstenite::Message;

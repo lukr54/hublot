@@ -7,7 +7,11 @@
 //!
 //! Reads the password from `HUBLOT_PASSWORD` or prompts. It is never written to disk or logged.
 //!
-//!   $env:HUBLOT_USER="root@pam"; cargo run -p spike-term
+//! `HUBLOT_HOST` and `HUBLOT_FP` have no defaults: a pinned fingerprint is specific to one node's
+//! certificate, so a built-in one would be wrong for everybody. Read yours from the Proxmox web UI
+//! under Datacenter → Certificates, or with `openssl x509 -fingerprint -sha256`.
+//!
+//!   $env:HUBLOT_HOST="192.168.1.10"; $env:HUBLOT_FP="AB:CD:…"; cargo run -p spike-term
 
 use std::time::Duration;
 
@@ -22,14 +26,14 @@ const PROBE_ROWS: u16 = 37;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let host = env_or("HUBLOT_HOST", "192.168.1.10");
-    let port: u16 = env_or("HUBLOT_PORT", "8006").parse().context("HUBLOT_PORT")?;
+    let host = std::env::var("HUBLOT_HOST").context("set HUBLOT_HOST to the node's address")?;
+    let port: u16 = env_or("HUBLOT_PORT", "8006")
+        .parse()
+        .context("HUBLOT_PORT")?;
     let node = env_or("HUBLOT_NODE", "pve");
     let user = env_or("HUBLOT_USER", "root@pam");
-    let fp_str = env_or(
-        "HUBLOT_FP",
-        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
-    );
+    let fp_str = std::env::var("HUBLOT_FP")
+        .context("set HUBLOT_FP to the SHA-256 fingerprint of the node's TLS certificate")?;
 
     let password = match std::env::var("HUBLOT_PASSWORD") {
         Ok(p) => p,
@@ -52,12 +56,15 @@ async fn main() -> Result<()> {
     println!("✓ websocket authenticated (server said OK)\n");
 
     // Resize first, so the shell's own idea of geometry is set before we ask about it.
-    ws.send(Message::Binary(pve::frame::resize(PROBE_COLS, PROBE_ROWS).into()))
-        .await?;
+    ws.send(Message::Binary(
+        pve::frame::resize(PROBE_COLS, PROBE_ROWS).into(),
+    ))
+    .await?;
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     for cmd in ["stty size\n", "uname -a\n"] {
-        ws.send(Message::Binary(pve::frame::data(cmd.as_bytes()).into())).await?;
+        ws.send(Message::Binary(pve::frame::data(cmd.as_bytes()).into()))
+            .await?;
         tokio::time::sleep(Duration::from_millis(600)).await;
     }
 
@@ -100,17 +107,21 @@ fn strip_ansi(text: &str) -> String {
         }
         match chars.next() {
             // CSI: parameters, then a final byte in @..~
-            Some('[') => for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
                 }
-            },
+            }
             // OSC: terminated by BEL or ST
-            Some(']') => for c in chars.by_ref() {
-                if c == '\x07' || c == '\x1b' {
-                    break;
+            Some(']') => {
+                for c in chars.by_ref() {
+                    if c == '\x07' || c == '\x1b' {
+                        break;
+                    }
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -166,7 +177,8 @@ mod tests {
     /// Shaped like what the host actually sent on 2026-07-24: a prompt, the echoed command, the
     /// bracketed-paste-off escape and a bare CR, then the answer. The first version of the parser
     /// returned None for exactly this input.
-    const TRANSCRIPT: &str = "root@pve:~# stty size\r\n\x1b[?2004l\r37 203\r\n\x1b[?2004hroot@pve:~# ";
+    const TRANSCRIPT: &str =
+        "root@pve:~# stty size\r\n\x1b[?2004l\r37 203\r\n\x1b[?2004hroot@pve:~# ";
 
     #[test]
     fn geometry_survives_escapes_and_bare_carriage_returns() {

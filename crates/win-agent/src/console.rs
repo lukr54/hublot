@@ -20,8 +20,8 @@ use windows::Win32::Storage::FileSystem::{
     OPEN_ALWAYS, OPEN_EXISTING,
 };
 use windows::Win32::System::Console::{
-    AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
-    STD_HANDLE, STD_OUTPUT_HANDLE,
+    AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE, STD_HANDLE,
+    STD_OUTPUT_HANDLE,
 };
 
 /// Past this the log is rotated once — two files, a couple of megabytes, forever. An agent that
@@ -77,7 +77,11 @@ pub fn attach_output(state_dir: &str) {
         if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) >= MAX_LOG {
             let _ = std::fs::rename(&path, std::path::Path::new(state_dir).join("agent.log.1"));
         }
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         // FILE_APPEND_DATA on its own is what makes each write land at the end of the file, which
         // matters because two runs of the agent can overlap during a restart.
         if let Ok(h) = CreateFileW(

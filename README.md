@@ -53,7 +53,6 @@ cp Cargo-linux.toml Cargo.toml && cargo build --release -p host-agent
 
 | | |
 |---|---|
-| [PLAN.md](PLAN.md) | measured topology, architecture, verified wire protocol, phases |
 | [DECISIONS.md](DECISIONS.md) | why each choice, with evidence and rejected alternatives |
 | [THREAT-MODEL.md](THREAT-MODEL.md) | assets, adversaries, and the things that make this dangerous |
 

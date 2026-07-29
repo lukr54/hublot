@@ -3,7 +3,7 @@
 //! The Hublot panel — Phase 1.
 //!
 //! A borderless, always-on-top console window summoned by a global hotkey. This phase implements
-//! **tier 2** (PLAN.md §3): a pty shell on the Proxmox node via `termproxy`. That is not yet a
+//! **tier 2**: a pty shell on the Proxmox node via `termproxy`. That is not yet a
 //! mirror of the physical console — tier 1 arrives in Phases 2–3 — but it is the thing that stops
 //! you opening a browser tab.
 //!
@@ -90,7 +90,8 @@ impl Config {
     /// can never connect and gives no hint why.
     fn clamp_visible(&mut self) {
         let mut seen = std::collections::HashSet::new();
-        self.visible.retain(|i| *i < self.agents.len() && seen.insert(*i));
+        self.visible
+            .retain(|i| *i < self.agents.len() && seen.insert(*i));
         self.visible.truncate(MAX_PANES);
         if self.visible.is_empty() && !self.agents.is_empty() {
             self.visible = vec![0];
@@ -101,13 +102,13 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            host: "192.168.1.10".into(),
+            // Host and fingerprint are deliberately empty: a pin belongs to one node's certificate,
+            // so any built-in value would be wrong everywhere. Settings asks for both on first run.
+            host: String::new(),
             port: 8006,
             node: "pve".into(),
             user: "root@pam".into(),
-            fingerprint:
-                "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
-                    .into(),
+            fingerprint: String::new(),
             hotkey: "Ctrl+Alt+H".into(),
             agent_addr: String::new(),
             agent_fingerprint: String::new(),
@@ -137,7 +138,8 @@ struct AppState {
     /// quietly instead of two connections fighting over the same pane.
     mirror_generation: Mutex<std::collections::HashMap<usize, u64>>,
     /// Outbound events toward each connected agent.
-    mirror_keys: Mutex<std::collections::HashMap<usize, tokio::sync::mpsc::Sender<protocol::ClientMsg>>>,
+    mirror_keys:
+        Mutex<std::collections::HashMap<usize, tokio::sync::mpsc::Sender<protocol::ClientMsg>>>,
     /// Exactly which accelerator is live, so a rebind releases that one and no other.
     registered_hotkey: Mutex<Option<String>>,
     /// The last clipboard value we applied *from* a remote machine.
@@ -181,13 +183,22 @@ struct MirrorStatus {
 
 fn set_status(app: &AppHandle, state: &'static str, detail: impl Into<String>) {
     // Global emit, not emit_to: a targeted emit races window creation and silently drops.
-    let _ = app.emit("console:status", Status { state, detail: detail.into() });
+    let _ = app.emit(
+        "console:status",
+        Status {
+            state,
+            detail: detail.into(),
+        },
+    );
 }
 
 // ── config ──────────────────────────────────────────────────────────────────────────────────────
 
 fn config_path(app: &AppHandle) -> std::path::PathBuf {
-    let dir = app.path().app_config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let dir = app
+        .path()
+        .app_config_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let _ = std::fs::create_dir_all(&dir);
     dir.join("config.json")
 }
@@ -241,13 +252,17 @@ fn keyring_entry(cfg: &Config) -> Result<keyring::Entry, String> {
 #[tauri::command]
 fn has_credential(state: State<'_, AppState>) -> bool {
     let cfg = state.config.lock().unwrap().clone();
-    keyring_entry(&cfg).map(|e| e.get_password().is_ok()).unwrap_or(false)
+    keyring_entry(&cfg)
+        .map(|e| e.get_password().is_ok())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
 fn set_credential(state: State<'_, AppState>, password: String) -> Result<(), String> {
     let cfg = state.config.lock().unwrap().clone();
-    keyring_entry(&cfg)?.set_password(&password).map_err(|e| e.to_string())
+    keyring_entry(&cfg)?
+        .set_password(&password)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -271,9 +286,16 @@ async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<(), Strin
     set_status(&app, "connecting", format!("{}@{}", cfg.user, cfg.host));
 
     let fingerprint = pve::parse_fingerprint(&cfg.fingerprint).map_err(|e| e.to_string())?;
-    let client = pve::PveClient::new(&cfg.host, cfg.port, fingerprint).map_err(|e| e.to_string())?;
-    let ticket = client.login(&cfg.user, &password).await.map_err(|e| e.to_string())?;
-    let tp = client.termproxy(&ticket, &cfg.node).await.map_err(|e| e.to_string())?;
+    let client =
+        pve::PveClient::new(&cfg.host, cfg.port, fingerprint).map_err(|e| e.to_string())?;
+    let ticket = client
+        .login(&cfg.user, &password)
+        .await
+        .map_err(|e| e.to_string())?;
+    let tp = client
+        .termproxy(&ticket, &cfg.node)
+        .await
+        .map_err(|e| e.to_string())?;
     let ws = client
         .open_console(&ticket, &cfg.node, &tp)
         .await
@@ -282,7 +304,11 @@ async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<(), Strin
     let (tx, mut rx) = mpsc::unbounded_channel::<Out>();
     *state.tx.lock().unwrap() = Some(tx);
 
-    set_status(&app, "connected", format!("{}@{} · node {}", cfg.user, cfg.host, cfg.node));
+    set_status(
+        &app,
+        "connected",
+        format!("{}@{} · node {}", cfg.user, cfg.host, cfg.node),
+    );
 
     tauri::async_runtime::spawn(async move {
         let (mut sink, mut stream) = ws.split();
@@ -345,14 +371,16 @@ fn disconnect(state: State<'_, AppState>) {
 fn send_input(state: State<'_, AppState>, data: String) -> Result<(), String> {
     let tx = state.tx.lock().unwrap();
     let tx = tx.as_ref().ok_or("not connected")?;
-    tx.send(Out::Data(data.into_bytes())).map_err(|_| "not connected".to_string())
+    tx.send(Out::Data(data.into_bytes()))
+        .map_err(|_| "not connected".to_string())
 }
 
 #[tauri::command]
 fn resize(state: State<'_, AppState>, cols: u16, rows: u16) -> Result<(), String> {
     let tx = state.tx.lock().unwrap();
     let Some(tx) = tx.as_ref() else { return Ok(()) }; // resizing while disconnected is harmless
-    tx.send(Out::Resize { cols, rows }).map_err(|_| "not connected".to_string())
+    tx.send(Out::Resize { cols, rows })
+        .map_err(|_| "not connected".to_string())
 }
 
 // ── mirror (tier 1) ─────────────────────────────────────────────────────────────────────────────
@@ -369,13 +397,17 @@ fn has_agent_token(state: State<'_, AppState>, addr: String) -> bool {
         return false;
     }
     let _ = state;
-    agent_keyring(&addr).map(|e| e.get_password().is_ok()).unwrap_or(false)
+    agent_keyring(&addr)
+        .map(|e| e.get_password().is_ok())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
 fn set_agent_token(state: State<'_, AppState>, addr: String, token: String) -> Result<(), String> {
     let _ = state;
-    agent_keyring(&addr)?.set_password(&token).map_err(|e| e.to_string())
+    agent_keyring(&addr)?
+        .set_password(&token)
+        .map_err(|e| e.to_string())
 }
 
 /// Choose which targets are on screen — one index for a single pane, two for a split.
@@ -424,7 +456,11 @@ impl FramePayload {
             cols: s.cols,
             rows: s.rows,
             cursor: s.cursor,
-            text: s.cells.chunks(w).map(|r| r.iter().map(|c| c.ch).collect()).collect(),
+            text: s
+                .cells
+                .chunks(w)
+                .map(|r| r.iter().map(|c| c.ch).collect())
+                .collect(),
             attrs: B64.encode(s.cells.iter().map(|c| c.attr).collect::<Vec<_>>()),
         }
     }
@@ -492,7 +528,8 @@ fn mirror_mouse(
 fn mirror_switch_vt(state: State<'_, AppState>, target: usize, vt: u8) -> Result<(), String> {
     let keys = state.mirror_keys.lock().unwrap();
     let tx = keys.get(&target).ok_or("not connected")?;
-    tx.try_send(protocol::ClientMsg::SwitchVt { vt }).map_err(|_| "not connected".to_string())
+    tx.try_send(protocol::ClientMsg::SwitchVt { vt })
+        .map_err(|_| "not connected".to_string())
 }
 
 /// Make the live sessions match `config.visible`: connect what should be on screen, drop what
@@ -521,7 +558,11 @@ async fn mirror_sync(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
         if let Err(e) = connect_target(&app, &cfg, i) {
             let _ = app.emit(
                 "mirror:status",
-                MirrorStatus { target: i, state: "error", detail: e.clone() },
+                MirrorStatus {
+                    target: i,
+                    state: "error",
+                    detail: e.clone(),
+                },
             );
             first_error.get_or_insert(e);
         }
@@ -535,7 +576,9 @@ async fn mirror_sync(app: AppHandle, state: State<'_, AppState>) -> Result<(), S
 /// Tear down one pane's session. Bumping the generation is what actually stops it: the task checks
 /// its own generation before every paint and returns quietly when it has been superseded.
 fn disconnect_target(app: &AppHandle, index: usize) {
-    let Some(state) = app.try_state::<AppState>() else { return };
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
     state.mirror_generation.lock().unwrap().remove(&index);
     let gone = state.mirror_keys.lock().unwrap().remove(&index);
     if let Some(tx) = gone {
@@ -546,7 +589,11 @@ fn disconnect_target(app: &AppHandle, index: usize) {
 }
 
 fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), String> {
-    let target = cfg.agents.get(index).ok_or("no such mirror target")?.clone();
+    let target = cfg
+        .agents
+        .get(index)
+        .ok_or("no such mirror target")?
+        .clone();
     if target.addr.is_empty() {
         return Err("no agent address configured".into());
     }
@@ -586,7 +633,14 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
         // Every emit is tagged with the pane it belongs to; without that, two live sessions paint
         // into each other's canvases.
         let status = |state: &'static str, detail: String| {
-            let _ = app.emit("mirror:status", MirrorStatus { target: index, state, detail });
+            let _ = app.emit(
+                "mirror:status",
+                MirrorStatus {
+                    target: index,
+                    state,
+                    detail,
+                },
+            );
         };
         loop {
             let stale = app
@@ -601,7 +655,10 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
             //   * a stored token — the console agent's way, typed in by hand and spent once;
             //   * nothing pinned yet — ask the person at that machine to approve us;
             //   * otherwise the certificate, which is the steady state.
-            let auth = match agent_keyring(&token_addr).ok().and_then(|e| e.get_password().ok()) {
+            let auth = match agent_keyring(&token_addr)
+                .ok()
+                .and_then(|e| e.get_password().ok())
+            {
                 Some(token) => protocol::Auth::Enrol { token },
                 None if fingerprint.is_none() => protocol::Auth::Approve,
                 None => protocol::Auth::Certificate,
@@ -618,10 +675,16 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
             {
                 let (app, identity) = (app.clone(), identity.clone());
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = mirror::stream(addr, fingerprint, identity, auth, tx, keys_rx).await {
+                    if let Err(e) =
+                        mirror::stream(addr, fingerprint, identity, auth, tx, keys_rx).await
+                    {
                         let _ = app.emit(
                             "mirror:status",
-                            MirrorStatus { target: index, state: "error", detail: format!("{e:#}") },
+                            MirrorStatus {
+                                target: index,
+                                state: "error",
+                                detail: format!("{e:#}"),
+                            },
                         );
                     }
                 });
@@ -642,113 +705,137 @@ fn connect_target(app: &AppHandle, cfg: &Config, index: usize) -> Result<(), Str
                 }
                 if let mirror::Event::Closed(why) = &ev {
                     // Pairing problems will not fix themselves by waiting.
-                    fatal = why.contains("not enrolled") || why.contains("pairing") || why.contains("token");
+                    fatal = why.contains("not enrolled")
+                        || why.contains("pairing")
+                        || why.contains("token");
                 }
                 match ev {
-                mirror::Event::Connected => status("connected", addr.to_string()),
-                mirror::Event::Confirm { sas } => {
-                    let _ = app.emit(
-                        "mirror:confirm",
-                        serde_json::json!({ "target": index, "sas": sas }),
-                    );
-                }
-                mirror::Event::Enrolled { fingerprint } => {
-                    // The token has done its one job. Delete it rather than leave a second, weaker
-                    // way in sitting in the credential store.
-                    if let Ok(entry) = agent_keyring(&token_addr) {
-                        let _ = entry.delete_credential();
-                    }
-                    // An approval pairing learns the certificate here, and it has to be written
-                    // down now: every later connection pins it, and if this is lost the machine
-                    // would silently fall back to asking for approval again.
-                    // An empty fingerprint here means the handshake never recorded the
-                    // certificate, which would leave this machine unpaired-but-connected and
-                    // asking to pair again on the next run. Say so rather than letting it pass.
-                    if fingerprint.is_empty() {
-                        eprintln!(
-                            "[hublot] enrolled with {addr} but observed no certificate — it will                              ask to pair again next time"
+                    mirror::Event::Connected => status("connected", addr.to_string()),
+                    mirror::Event::Confirm { sas } => {
+                        let _ = app.emit(
+                            "mirror:confirm",
+                            serde_json::json!({ "target": index, "sas": sas }),
                         );
                     }
-                    if !fingerprint.is_empty() {
-                        if let Some(s) = app.try_state::<AppState>() {
-                            let mut cfg = s.config.lock().unwrap();
-                            if let Some(t) = cfg.agents.get_mut(index) {
-                                t.fingerprint = fingerprint.clone();
-                            }
-                            if let Ok(json) = serde_json::to_string_pretty(&*cfg) {
-                                let _ = std::fs::write(config_path(&app), json);
+                    mirror::Event::Enrolled { fingerprint } => {
+                        // The token has done its one job. Delete it rather than leave a second, weaker
+                        // way in sitting in the credential store.
+                        if let Ok(entry) = agent_keyring(&token_addr) {
+                            let _ = entry.delete_credential();
+                        }
+                        // An approval pairing learns the certificate here, and it has to be written
+                        // down now: every later connection pins it, and if this is lost the machine
+                        // would silently fall back to asking for approval again.
+                        // An empty fingerprint here means the handshake never recorded the
+                        // certificate, which would leave this machine unpaired-but-connected and
+                        // asking to pair again on the next run. Say so rather than letting it pass.
+                        if fingerprint.is_empty() {
+                            eprintln!(
+                            "[hublot] enrolled with {addr} but observed no certificate — it will                              ask to pair again next time"
+                        );
+                        }
+                        if !fingerprint.is_empty() {
+                            if let Some(s) = app.try_state::<AppState>() {
+                                let mut cfg = s.config.lock().unwrap();
+                                if let Some(t) = cfg.agents.get_mut(index) {
+                                    t.fingerprint = fingerprint.clone();
+                                }
+                                if let Ok(json) = serde_json::to_string_pretty(&*cfg) {
+                                    let _ = std::fs::write(config_path(&app), json);
+                                }
                             }
                         }
+                        let _ = app.emit(
+                            "mirror:confirm",
+                            serde_json::json!({ "target": index, "sas": null }),
+                        );
+                        status("connected", "paired".into());
                     }
-                    let _ = app.emit("mirror:confirm", serde_json::json!({ "target": index, "sas": null }));
-                    status("connected", "paired".into());
-                }
-                mirror::Event::Input { enabled, reason } => {
-                    let _ = app.emit("mirror:input", MirrorStatus {
-                        target: index,
-                        state: if enabled { "enabled" } else { "disabled" },
-                        detail: reason,
-                    });
-                }
-                mirror::Event::Screen(s) => {
-                    let _ = app.emit("mirror:frame", FramePayload::of(index, &s));
-                }
-                mirror::Event::ScreenInfo { w, h } => {
-                    let _ = app.emit(
-                        "mirror:screeninfo",
-                        serde_json::json!({ "target": index, "w": w, "h": h }),
-                    );
-                }
-                mirror::Event::Clipboard(text) => {
-                    // Record before setting, because our own watcher may wake the instant we do —
-                    // without this the two clipboards pass a value back and forth forever.
-                    if let Some(s) = app.try_state::<AppState>() {
-                        *s.clipboard_echo.lock().unwrap() = Some(text.clone());
-                        // With two machines mirrored, text copied on one should reach the other as
-                        // well as this PC. Sending it on from here rather than letting the watcher
-                        // do it is what makes that a fan-out instead of a loop: the origin is
-                        // excluded explicitly, and every *other* agent's own echo guard stops the
-                        // value bouncing back from there.
-                        s.broadcast(Some(index), protocol::ClientMsg::Clipboard { text: text.clone() });
+                    mirror::Event::Input { enabled, reason } => {
+                        let _ = app.emit(
+                            "mirror:input",
+                            MirrorStatus {
+                                target: index,
+                                state: if enabled { "enabled" } else { "disabled" },
+                                detail: reason,
+                            },
+                        );
                     }
-                    winclip::set_text(&text);
-                }
-                mirror::Event::Notice(text) => {
-                    let _ = app.emit(
-                        "mirror:notice",
-                        serde_json::json!({ "target": index, "text": text }),
-                    );
-                }
-                mirror::Event::Pointer { x, y, visible } => {
-                    let _ = app.emit(
+                    mirror::Event::Screen(s) => {
+                        let _ = app.emit("mirror:frame", FramePayload::of(index, &s));
+                    }
+                    mirror::Event::ScreenInfo { w, h } => {
+                        let _ = app.emit(
+                            "mirror:screeninfo",
+                            serde_json::json!({ "target": index, "w": w, "h": h }),
+                        );
+                    }
+                    mirror::Event::Clipboard(text) => {
+                        // Record before setting, because our own watcher may wake the instant we do —
+                        // without this the two clipboards pass a value back and forth forever.
+                        if let Some(s) = app.try_state::<AppState>() {
+                            *s.clipboard_echo.lock().unwrap() = Some(text.clone());
+                            // With two machines mirrored, text copied on one should reach the other as
+                            // well as this PC. Sending it on from here rather than letting the watcher
+                            // do it is what makes that a fan-out instead of a loop: the origin is
+                            // excluded explicitly, and every *other* agent's own echo guard stops the
+                            // value bouncing back from there.
+                            s.broadcast(
+                                Some(index),
+                                protocol::ClientMsg::Clipboard { text: text.clone() },
+                            );
+                        }
+                        winclip::set_text(&text);
+                    }
+                    mirror::Event::Notice(text) => {
+                        let _ = app.emit(
+                            "mirror:notice",
+                            serde_json::json!({ "target": index, "text": text }),
+                        );
+                    }
+                    mirror::Event::Pointer { x, y, visible } => {
+                        let _ = app.emit(
                         "mirror:pointer",
                         serde_json::json!({ "target": index, "x": x, "y": y, "visible": visible }),
                     );
-                }
-                mirror::Event::PointerShape { w, h, hot_x, hot_y, png } => {
-                    let _ = app.emit(
-                        "mirror:pointershape",
-                        serde_json::json!({
-                            "target": index, "w": w, "h": h, "hotX": hot_x, "hotY": hot_y,
-                            "url": format!("data:image/png;base64,{}", B64.encode(&png)),
-                        }),
-                    );
-                }
-                mirror::Event::Raster { x, y, w, h, mime, data } => {
-                    // A data: URL is the cheapest path to the canvas — the webview's own image
-                    // decoders do the work, and we never hand the frontend anything but pixels.
-                    let _ = app.emit(
-                        "mirror:raster",
-                        serde_json::json!({
-                            "target": index, "x": x, "y": y, "w": w, "h": h,
-                            "url": format!("data:{mime};base64,{}", B64.encode(&data)),
-                        }),
-                    );
-                }
-                mirror::Event::Closed(why) => {
-                    status("disconnected", why);
-                    break;
-                }
+                    }
+                    mirror::Event::PointerShape {
+                        w,
+                        h,
+                        hot_x,
+                        hot_y,
+                        png,
+                    } => {
+                        let _ = app.emit(
+                            "mirror:pointershape",
+                            serde_json::json!({
+                                "target": index, "w": w, "h": h, "hotX": hot_x, "hotY": hot_y,
+                                "url": format!("data:image/png;base64,{}", B64.encode(&png)),
+                            }),
+                        );
+                    }
+                    mirror::Event::Raster {
+                        x,
+                        y,
+                        w,
+                        h,
+                        mime,
+                        data,
+                    } => {
+                        // A data: URL is the cheapest path to the canvas — the webview's own image
+                        // decoders do the work, and we never hand the frontend anything but pixels.
+                        let _ = app.emit(
+                            "mirror:raster",
+                            serde_json::json!({
+                                "target": index, "x": x, "y": y, "w": w, "h": h,
+                                "url": format!("data:{mime};base64,{}", B64.encode(&data)),
+                            }),
+                        );
+                    }
+                    mirror::Event::Closed(why) => {
+                        status("disconnected", why);
+                        break;
+                    }
                 }
             }
 
@@ -876,7 +963,9 @@ fn forget_pve_credential(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 fn toggle_panel(app: &AppHandle) {
-    let Some(w) = app.get_webview_window("main") else { return };
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
     let visible = w.is_visible().unwrap_or(false);
     let focused = w.is_focused().unwrap_or(false);
     if visible && focused {
@@ -940,8 +1029,12 @@ fn main() {
                         seen = now;
                         // `get_text` returns nothing for content marked "Clipboard Viewer Ignore",
                         // which is how password managers ask not to be copied around.
-                        let Some(text) = winclip::get_text(protocol::MAX_CLIPBOARD) else { continue };
-                        let Some(state) = h.try_state::<AppState>() else { continue };
+                        let Some(text) = winclip::get_text(protocol::MAX_CLIPBOARD) else {
+                            continue;
+                        };
+                        let Some(state) = h.try_state::<AppState>() else {
+                            continue;
+                        };
                         if state.clipboard_echo.lock().unwrap().as_deref() == Some(text.as_str()) {
                             continue;
                         }

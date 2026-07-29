@@ -21,7 +21,10 @@ pub struct PinnedCert {
 
 impl PinnedCert {
     pub fn new(fingerprint: [u8; 32], provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
-        Self { fingerprint, provider }
+        Self {
+            fingerprint,
+            provider,
+        }
     }
 }
 
@@ -76,7 +79,9 @@ impl ServerCertVerifier for PinnedCert {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -97,7 +102,10 @@ pub struct TrustOnFirstUse {
 
 impl TrustOnFirstUse {
     pub fn new(provider: Arc<rustls::crypto::CryptoProvider>) -> Self {
-        Self { seen: Arc::new(std::sync::Mutex::new(None)), provider }
+        Self {
+            seen: Arc::new(std::sync::Mutex::new(None)),
+            provider,
+        }
     }
 
     /// A handle to whatever certificate the server ends up presenting.
@@ -148,7 +156,9 @@ impl ServerCertVerifier for TrustOnFirstUse {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -214,7 +224,9 @@ impl rustls::server::danger::ClientCertVerifier for AcceptAnyClientCert {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -245,7 +257,11 @@ pub fn sas(server_fp: &[u8; 32], client_fp: &[u8; 32]) -> String {
 }
 
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+    bytes
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// The fingerprint of a DER certificate, hashed exactly as [`PinnedCert`] will hash it.
@@ -260,7 +276,10 @@ pub fn fingerprint_of(der: &[u8]) -> [u8; 32] {
 pub fn parse_fingerprint(s: &str) -> Result<[u8; 32]> {
     let clean: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if clean.len() != 64 {
-        bail!("fingerprint must be 32 hex bytes, got {} hex digits", clean.len());
+        bail!(
+            "fingerprint must be 32 hex bytes, got {} hex digits",
+            clean.len()
+        );
     }
     let mut out = [0u8; 32];
     for (i, b) in out.iter_mut().enumerate() {

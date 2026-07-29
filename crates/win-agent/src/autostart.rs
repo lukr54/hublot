@@ -63,8 +63,12 @@ pub fn install(allow: Option<&str>, port: u16) -> Result<()> {
         },
         None => {
             println!();
-            println!("No --allow address given, so no firewall rule was created. Unless one already");
-            println!("exists, the panel will not be able to connect. Re-run as administrator with:");
+            println!(
+                "No --allow address given, so no firewall rule was created. Unless one already"
+            );
+            println!(
+                "exists, the panel will not be able to connect. Re-run as administrator with:"
+            );
             println!();
             println!("   \"{path}\" --install --allow <the panel PC's address>");
         }
@@ -73,7 +77,9 @@ pub fn install(allow: Option<&str>, port: u16) -> Result<()> {
 }
 
 pub fn uninstall() -> Result<()> {
-    let out = Command::new("schtasks").args(["/Delete", "/TN", TASK, "/F"]).output()?;
+    let out = Command::new("schtasks")
+        .args(["/Delete", "/TN", TASK, "/F"])
+        .output()?;
     if !out.status.success() {
         bail!(
             "schtasks failed: {}{}",
@@ -89,7 +95,9 @@ pub fn uninstall() -> Result<()> {
 }
 
 pub fn status() -> Result<()> {
-    let out = Command::new("schtasks").args(["/Query", "/TN", TASK]).output()?;
+    let out = Command::new("schtasks")
+        .args(["/Query", "/TN", TASK])
+        .output()?;
     if out.status.success() {
         println!("{}", String::from_utf8_lossy(&out.stdout).trim());
     } else {

@@ -65,12 +65,18 @@ async fn main() -> anyhow::Result<()> {
     /// `--allow 192.168.1.20` — the flag's value is the next argument along.
     fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         let i = args.iter().position(|a| a == flag)?;
-        args.get(i + 1).map(|s| s.as_str()).filter(|s| !s.starts_with("--"))
+        args.get(i + 1)
+            .map(|s| s.as_str())
+            .filter(|s| !s.starts_with("--"))
     }
 
     if args.iter().any(|a| a == "--displays") {
         for d in capture::displays()? {
-            let mark = if Some(d.name.as_str()) == chosen_display(&state_dir).as_deref() { "*" } else { " " };
+            let mark = if Some(d.name.as_str()) == chosen_display(&state_dir).as_deref() {
+                "*"
+            } else {
+                " "
+            };
             println!("{mark} {} {}x{}", d.name, d.w, d.h);
         }
         return Ok(());
@@ -105,118 +111,147 @@ async fn main() -> anyhow::Result<()> {
     {
         let tx = tx.clone();
         let state_for_capture = state_dir.clone();
-        std::thread::Builder::new().name("capture".into()).spawn(move || {
-            let mut want = chosen_display(&state_for_capture);
-            let mut cap = acquire(want.as_deref(), &tx);
-            let _ = info_tx.send((cap.width as u16, cap.height as u16));
-            eprintln!("[hublot] capturing {}x{}", cap.width, cap.height);
-            loop {
-                // Coalesced deliberately: three viewers attaching at once want the same frame, and
-                // it reaches all of them because the broadcast has no idea who asked.
-                if refresh_rx.try_recv().is_ok() {
-                    while refresh_rx.try_recv().is_ok() {}
-                    match cap.full() {
-                        Ok(t) => {
-                            let _ = tx.send(std::sync::Arc::new(capture::Update::Tile(t)));
-                        }
-                        Err(e) => eprintln!("[hublot] full frame failed: {e:#}"),
-                    }
-                }
-                // Re-read the choice rather than requiring a restart: the picker in the panel
-                // writes this file, and waiting for a logon to take effect would make the setting
-                // feel broken.
-                let now = chosen_display(&state_for_capture);
-                if now != want {
-                    want = now;
-                    eprintln!("[hublot] switching to display {:?}", want.as_deref().unwrap_or("(first)"));
-                    cap = acquire(want.as_deref(), &tx);
-                    let _ = tx.send(Arc::new(capture::Update::Geometry {
-                        w: cap.width as u16,
-                        h: cap.height as u16,
-                    }));
-                    if let Ok(t) = cap.full() {
-                        let _ = tx.send(Arc::new(capture::Update::Tile(t)));
-                    }
-                }
-                match cap.next_change(500) {
-                    Ok(updates) => {
-                        for u in updates {
-                            let _ = tx.send(Arc::new(u));
-                        }
-                    }
-                    // **Losing the desktop is normal, not fatal.** Desktop Duplication hands back
-                    // ACCESS_LOST whenever Windows switches desktops — a UAC prompt, the lock
-                    // screen, Ctrl+Alt+Del, a resolution change, a driver reset — and this used to
-                    // exit the process, taking the agent down with it. From the panel that looked
-                    // like a link that connected and then died for no reason, which is exactly
-                    // what it was.
-                    Err(e) => {
-                        eprintln!("[hublot] lost the desktop ({e:#}) — reacquiring");
-                        let (was_w, was_h) = (cap.width, cap.height);
-                        cap = acquire(want.as_deref(), &tx);
-                        if (cap.width, cap.height) != (was_w, was_h) {
-                            eprintln!("[hublot] desktop is now {}x{}", cap.width, cap.height);
-                            let _ = tx.send(Arc::new(capture::Update::Geometry {
-                                w: cap.width as u16,
-                                h: cap.height as u16,
-                            }));
-                        }
-                        // Whatever viewers are attached are holding a stale picture of a desktop
-                        // that has since changed; give them a whole frame rather than patches of
-                        // one they no longer have.
+        std::thread::Builder::new()
+            .name("capture".into())
+            .spawn(move || {
+                let mut want = chosen_display(&state_for_capture);
+                let mut cap = acquire(want.as_deref(), &tx);
+                let _ = info_tx.send((cap.width as u16, cap.height as u16));
+                eprintln!("[hublot] capturing {}x{}", cap.width, cap.height);
+                loop {
+                    // Coalesced deliberately: three viewers attaching at once want the same frame, and
+                    // it reaches all of them because the broadcast has no idea who asked.
+                    if refresh_rx.try_recv().is_ok() {
+                        while refresh_rx.try_recv().is_ok() {}
                         match cap.full() {
                             Ok(t) => {
-                                let _ = tx.send(Arc::new(capture::Update::Tile(t)));
+                                let _ = tx.send(std::sync::Arc::new(capture::Update::Tile(t)));
                             }
-                            Err(e) => eprintln!("[hublot] first frame after reacquire failed: {e:#}"),
+                            Err(e) => eprintln!("[hublot] full frame failed: {e:#}"),
+                        }
+                    }
+                    // Re-read the choice rather than requiring a restart: the picker in the panel
+                    // writes this file, and waiting for a logon to take effect would make the setting
+                    // feel broken.
+                    let now = chosen_display(&state_for_capture);
+                    if now != want {
+                        want = now;
+                        eprintln!(
+                            "[hublot] switching to display {:?}",
+                            want.as_deref().unwrap_or("(first)")
+                        );
+                        cap = acquire(want.as_deref(), &tx);
+                        let _ = tx.send(Arc::new(capture::Update::Geometry {
+                            w: cap.width as u16,
+                            h: cap.height as u16,
+                        }));
+                        if let Ok(t) = cap.full() {
+                            let _ = tx.send(Arc::new(capture::Update::Tile(t)));
+                        }
+                    }
+                    match cap.next_change(500) {
+                        Ok(updates) => {
+                            for u in updates {
+                                let _ = tx.send(Arc::new(u));
+                            }
+                        }
+                        // **Losing the desktop is normal, not fatal.** Desktop Duplication hands back
+                        // ACCESS_LOST whenever Windows switches desktops — a UAC prompt, the lock
+                        // screen, Ctrl+Alt+Del, a resolution change, a driver reset — and this used to
+                        // exit the process, taking the agent down with it. From the panel that looked
+                        // like a link that connected and then died for no reason, which is exactly
+                        // what it was.
+                        Err(e) => {
+                            eprintln!("[hublot] lost the desktop ({e:#}) — reacquiring");
+                            let (was_w, was_h) = (cap.width, cap.height);
+                            cap = acquire(want.as_deref(), &tx);
+                            if (cap.width, cap.height) != (was_w, was_h) {
+                                eprintln!("[hublot] desktop is now {}x{}", cap.width, cap.height);
+                                let _ = tx.send(Arc::new(capture::Update::Geometry {
+                                    w: cap.width as u16,
+                                    h: cap.height as u16,
+                                }));
+                            }
+                            // Whatever viewers are attached are holding a stale picture of a desktop
+                            // that has since changed; give them a whole frame rather than patches of
+                            // one they no longer have.
+                            match cap.full() {
+                                Ok(t) => {
+                                    let _ = tx.send(Arc::new(capture::Update::Tile(t)));
+                                }
+                                Err(e) => {
+                                    eprintln!("[hublot] first frame after reacquire failed: {e:#}")
+                                }
+                            }
                         }
                     }
                 }
-            }
-        })?;
+            })?;
     }
-    let (screen_w, screen_h) = info_rx.recv().context("capture thread never reported geometry")?;
+    let (screen_w, screen_h) = info_rx
+        .recv()
+        .context("capture thread never reported geometry")?;
 
     // Clipboard watcher. Its own thread because the sequence-number check is a blocking syscall on
     // a timer, and it must not compete with capture for the same wake-ups.
     {
         let tx = tx.clone();
         let echo = echo_guard.clone();
-        std::thread::Builder::new().name("clipboard".into()).spawn(move || {
-            let mut seen = winclip::sequence();
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(400));
-                let now = winclip::sequence();
-                if now == seen {
-                    continue;
+        std::thread::Builder::new()
+            .name("clipboard".into())
+            .spawn(move || {
+                let mut seen = winclip::sequence();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(400));
+                    let now = winclip::sequence();
+                    if now == seen {
+                        continue;
+                    }
+                    seen = now;
+                    let Some(text) = winclip::get_text(protocol::MAX_CLIPBOARD) else {
+                        continue;
+                    };
+                    // Do not send back what we were just given: without this the two clipboards
+                    // bounce a value between them forever.
+                    if echo.lock().unwrap().as_deref() == Some(text.as_str()) {
+                        continue;
+                    }
+                    let _ = tx.send(Arc::new(capture::Update::Clipboard(text)));
                 }
-                seen = now;
-                let Some(text) = winclip::get_text(protocol::MAX_CLIPBOARD) else { continue };
-                // Do not send back what we were just given: without this the two clipboards
-                // bounce a value between them forever.
-                if echo.lock().unwrap().as_deref() == Some(text.as_str()) {
-                    continue;
-                }
-                let _ = tx.send(Arc::new(capture::Update::Clipboard(text)));
-            }
-        })?;
+            })?;
     }
 
     let endpoint = quinn::Endpoint::server(agent_core::server_config(&id)?, listen)
         .context("binding endpoint")?;
     eprintln!("[hublot] listening on {listen}");
-    eprintln!("[hublot] fingerprint {}", protocol::pin::hex(&id.fingerprint));
+    eprintln!(
+        "[hublot] fingerprint {}",
+        protocol::pin::hex(&id.fingerprint)
+    );
     eprintln!(
         "[hublot] pairing {}",
-        if pairing_open { "OPEN — a token holder may enrol" } else { "closed" }
+        if pairing_open {
+            "OPEN — a token holder may enrol"
+        } else {
+            "closed"
+        }
     );
 
     while let Some(incoming) = endpoint.accept().await {
         let (id, tx, echo) = (id.clone(), tx.clone(), echo_guard.clone());
         let refresh = refresh_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                serve(incoming, id, pairing_open, tx, refresh, echo, screen_w, screen_h).await
+            if let Err(e) = serve(
+                incoming,
+                id,
+                pairing_open,
+                tx,
+                refresh,
+                echo,
+                screen_w,
+                screen_h,
+            )
+            .await
             {
                 eprintln!("[hublot] connection ended: {e:#}");
             }
@@ -310,17 +345,41 @@ async fn serve(
 
     let conn = incoming.await.context("handshake")?;
     let (mut send, mut recv) = conn.accept_bi().await.context("accepting stream")?;
-    agent_core::authenticate(&conn, &mut send, &mut recv, &id, pairing_open, &approve::Desktop).await?;
+    agent_core::authenticate(
+        &conn,
+        &mut send,
+        &mut recv,
+        &id,
+        pairing_open,
+        &approve::Desktop,
+    )
+    .await?;
 
-    protocol::write_msg(&mut send, &ServerMsg::ScreenInfo { w: screen_w, h: screen_h }).await?;
-    protocol::write_msg(&mut send, &ServerMsg::Input { enabled: true, reason: String::new() })
-        .await?;
+    protocol::write_msg(
+        &mut send,
+        &ServerMsg::ScreenInfo {
+            w: screen_w,
+            h: screen_h,
+        },
+    )
+    .await?;
+    protocol::write_msg(
+        &mut send,
+        &ServerMsg::Input {
+            enabled: true,
+            reason: String::new(),
+        },
+    )
+    .await?;
 
     // The injector belongs to this connection. Dropping it releases everything held — which on
     // Windows we must do ourselves, since there is no kernel here to release a dying device's keys
     // the way there is for uinput.
-    let input_task =
-        tokio::spawn(input_loop(recv, inject::Injector::new(screen_w, screen_h), echo));
+    let input_task = tokio::spawn(input_loop(
+        recv,
+        inject::Injector::new(screen_w, screen_h),
+        echo,
+    ));
 
     let result = stream_tiles(&mut send, tx, refresh).await;
     input_task.abort();
@@ -399,10 +458,18 @@ async fn stream_tiles(
             capture::Update::Geometry { w, h } => ServerMsg::ScreenInfo { w: *w, h: *h },
             capture::Update::Notice(text) => ServerMsg::Notice { text: text.clone() },
             capture::Update::Clipboard(text) => ServerMsg::Clipboard { text: text.clone() },
-            capture::Update::Pointer { x, y, visible } => {
-                ServerMsg::Pointer { x: *x, y: *y, visible: *visible }
-            }
-            capture::Update::Shape { w, h, hot_x, hot_y, png } => ServerMsg::PointerShape {
+            capture::Update::Pointer { x, y, visible } => ServerMsg::Pointer {
+                x: *x,
+                y: *y,
+                visible: *visible,
+            },
+            capture::Update::Shape {
+                w,
+                h,
+                hot_x,
+                hot_y,
+                png,
+            } => ServerMsg::PointerShape {
                 w: *w,
                 h: *h,
                 hot_x: *hot_x,
