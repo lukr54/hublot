@@ -6,11 +6,25 @@
 //! `vcsa`'s 8-bit cells cannot carry a French locale's output, attributes from `vcsa` because
 //! `vcsu` has none.
 //!
-//! Change notification is `poll()`, not a timer. The driver reports readable whenever the VT has
-//! been updated since the last `read()`, with a forced initial `POLLPRI` so an update between the
-//! last read and the first poll cannot be lost. Idle costs nothing.
+//! Change notification is `poll()`, not a timer. Both of the descriptors it watches have a way of
+//! never blocking that reads like working code.
+//!
+//! On `/dev/vcsa*` the signal is `POLLPRI`, never `POLLIN`. `vcs_poll()` returns `DEFAULT_POLLMASK`
+//! for these devices, so readability is set on every poll whatever the console is doing: there is
+//! always a screen there to read. `POLLPRI` is the only bit meaning *changed since the last
+//! `read()`*, and the driver forces an initial one so an update between the last read and the first
+//! poll cannot be lost.
+//!
+//! On `/sys/class/tty/tty0/active` the pending event has to be consumed by reading that exact
+//! descriptor before each poll, or kernfs goes on reporting it. See `drain_active`.
+//!
+//! Get either wrong and `poll()` returns at once every time, the timeout never engages, and this
+//! becomes a busy loop re-decoding the whole grid as fast as the core allows. Both were wrong
+//! together, at a steady 100% of a core with nothing connected. Polled correctly, idle costs
+//! nothing.
 
 use std::io;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::io::{AsRawFd, RawFd};
 
 use protocol::{Cell, Screen};
@@ -122,13 +136,42 @@ impl Console {
         })
     }
 
+    /// Consume the pending sysfs event so the next `poll()` waits for the *next* one.
+    ///
+    /// kernfs decides "has this changed?" by comparing a counter on this descriptor against one on
+    /// the node, and only a `read()` of **this** descriptor moves it. Reading the value through a
+    /// separate `File::open` — which is what `active_vt()` does — leaves this one untouched, so the
+    /// counters never agree and `poll()` reports `POLLPRI` immediately, every time, forever. The
+    /// seek matters as much as the read: at EOF the next read returns 0 without re-entering the
+    /// kernel's seq-file start, and the counter stays where it was.
+    fn drain_active(&self) -> io::Result<()> {
+        let mut f = &self.active;
+        f.seek(SeekFrom::Start(0))?;
+        let mut buf = [0u8; 64];
+        loop {
+            match f.read(&mut buf) {
+                Ok(0) => return Ok(()),
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Block until the console changes or the active VT is switched.
     ///
     /// The timeout is a safety net, not the mechanism — if the sysfs notification for VT switches
     /// ever stops firing we still notice within a couple of seconds instead of never.
     pub fn wait(&self, timeout_ms: i32) -> io::Result<()> {
+        // Before blocking, not after: a switch that lands between here and the `poll()` below bumps
+        // the node's counter and the poll returns at once, so re-arming early cannot lose one.
+        self.drain_active()?;
+
         let mut fds = [
-            libc::pollfd { fd: self.vcsa.as_raw_fd(), events: libc::POLLPRI | libc::POLLIN, revents: 0 },
+            // `POLLPRI` alone, and never `POLLIN`: see the note at the top of this file. Asking for
+            // readability here is asking for something that is always true, and the wait stops
+            // waiting.
+            libc::pollfd { fd: self.vcsa.as_raw_fd(), events: libc::POLLPRI, revents: 0 },
             libc::pollfd { fd: self.active.as_raw_fd(), events: libc::POLLPRI, revents: 0 },
         ];
         let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
