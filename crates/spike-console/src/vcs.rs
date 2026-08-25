@@ -103,11 +103,10 @@ impl Console {
         pread_exact(self.vcsu.as_raw_fd(), &mut buf, 0)?;
 
         let cells = buf
-            .chunks_exact(4)
-            .map(|c| {
-                let cp = u32::from_ne_bytes([c[0], c[1], c[2], c[3]]);
-                char::from_u32(cp).unwrap_or('\u{fffd}')
-            })
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| char::from_u32(u32::from_ne_bytes(*c)).unwrap_or('\u{fffd}'))
             .collect();
 
         Ok(Screen { geom, cells })
