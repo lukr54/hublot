@@ -24,7 +24,7 @@ jobs:
     name: windows (panel + win-agent)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -42,7 +42,7 @@ jobs:
     name: linux (host-agent)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -59,7 +59,7 @@ jobs:
     name: advisories + licences
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Both halves, each against the platform it actually ships to. Without `--target` the Windows
       # workspace drags in Tauri's whole GTK/WebKit tree, which this project never compiles and
       # would fail on advisories nobody here can act on.
@@ -75,7 +75,7 @@ jobs:
     name: fuzz (smoke)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-fuzz
