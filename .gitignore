@@ -18,6 +18,8 @@ node_modules/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/coverage/
+fuzz/Cargo.lock
+crates/*/Cargo.lock
 # Audit logs, wherever a state directory ends up beside the source.
 audit.log
 audit.log.1
