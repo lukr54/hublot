@@ -33,3 +33,9 @@ sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-util = "0.3"
+
+# Tauri 2 pins gtk 0.18 on Linux, which needs glib 0.18, and no 0.18 release carries the fix for
+# RUSTSEC-2024-0429. vendor/glib-0.18.5 is 0.18.5 with that one-line fix backported; PATCHED.md
+# there says what changed. Drop this and the directory once Tauri reaches glib >= 0.20.
+[patch.crates-io]
+glib = { path = "vendor/glib-0.18.5" }
